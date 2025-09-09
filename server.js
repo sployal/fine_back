@@ -146,7 +146,57 @@ const uploadToCloudinary = (buffer, originalName) => {
   });
 };
 
-// Get user profile helper
+// Alternative authentication approach if the main one fails
+const authenticateUserAlternative = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid authorization header' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    // Try direct JWT verification first
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.decode(token, { complete: true });
+      
+      if (!decoded) {
+        throw new Error('Invalid JWT format');
+      }
+      
+      console.log('🔐 JWT payload:', decoded.payload);
+      
+      // Then verify with Supabase
+      const response = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'apikey': process.env.SUPABASE_SERVICE_KEY
+        }
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log('❌ Supabase API error:', response.status, errorText);
+        throw new Error(`Supabase API error: ${response.status}`);
+      }
+      
+      const userData = await response.json();
+      console.log('✅ User data from Supabase:', userData.id, userData.email);
+      
+      req.user = userData;
+      next();
+      
+    } catch (jwtError) {
+      console.log('❌ JWT or API error:', jwtError.message);
+      return res.status(401).json({ error: 'Invalid token format or expired' });
+    }
+    
+  } catch (error) {
+    console.error('❌ Auth middleware error:', error);
+    res.status(401).json({ error: 'Authentication failed' });
+  }
+};
 const getUserProfile = async (userId) => {
   try {
     const { data, error } = await supabase
