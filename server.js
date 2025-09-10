@@ -278,6 +278,7 @@ app.post('/api/upload-images', uploadLimiter, authenticateUser, upload.array('im
 });
 
 // Create post endpoint
+// Create post endpoint - IMPROVED VERSION
 app.post('/api/posts', authenticateUser, async (req, res) => {
   try {
     const { content, tags = [], images = [], location, userId } = req.body;
@@ -303,8 +304,8 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
 
     console.log(`📝 Creating post for user: ${actualUserId}`);
 
-    // Get user profile information
-    const userProfile = await getUserProfile(actualUserId);
+    // First, ensure user has a profile (create if missing)
+    await ensureUserProfile(actualUserId);
 
     // Insert post into database
     const { data: post, error } = await supabase
@@ -317,18 +318,7 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
         images: Array.isArray(images) ? images : [images],
         created_at: new Date().toISOString()
       }])
-      .select(`
-        id,
-        user_id,
-        caption,
-        location,
-        tags,
-        images,
-        created_at,
-        likes_count,
-        comments_count,
-        is_featured
-      `)
+      .select('id')
       .single();
 
     if (error) {
@@ -338,51 +328,9 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
 
     console.log(`✅ Post created successfully: ${post.id}`);
 
-    // Format response to match Flutter app expectations
-    const response = {
-      success: true,
-      message: 'Post created successfully',
-      post: {
-        id: post.id,
-        userId: post.user_id,
-        userName: userProfile.display_name,
-        imageUrl: post.images[0], // First image as primary
-        images: post.images,
-        caption: post.caption,
-        location: post.location,
-        tags: post.tags || [],
-        createdAt: post.created_at,
-        isVerified: userProfile.is_verified,
-        userType: userProfile.user_type,
-        likes: post.likes_count || 0,
-        commentCount: post.comments_count || 0,
-        isFeatured: post.is_featured || false
-      }
-    };
-
-    res.status(201).json(response);
-
-  } catch (error) {
-    console.error('Create post error:', error);
-    res.status(500).json({ error: 'Server error creating post' });
-  }
-});
-
-// Get posts endpoint with pagination
-// Get posts endpoint with pagination - USING THE VIEW
-app.get('/api/posts', async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
-    const offset = (page - 1) * limit;
-    const userId = req.query.user_id;
-    const tag = req.query.tag;
-
-    console.log(`📥 Fetching posts - Page: ${page}, Limit: ${limit}, UserId: ${userId}, Tag: ${tag}`);
-
-    // Use the posts_with_users view that already joins the data
-    let query = supabase
-      .from('posts_with_users')  // ← Use the view instead of posts table
+    // Now fetch the complete post data using the view
+    const { data: completePost, error: fetchError } = await supabase
+      .from('posts_with_users')
       .select(`
         id,
         user_id,
@@ -398,68 +346,113 @@ app.get('/api/posts', async (req, res) => {
         avatar_url,
         is_verified,
         user_type
-      `, { count: 'exact' });
+      `)
+      .eq('id', post.id)
+      .single();
 
-    // Apply filters
-    if (userId) {
-      query = query.eq('user_id', userId);
+    if (fetchError) {
+      console.error('Error fetching complete post:', fetchError);
+      // Fallback - still return success but with basic data
+      return res.status(201).json({
+        success: true,
+        message: 'Post created successfully',
+        post: {
+          id: post.id,
+          userId: actualUserId,
+          userName: 'Anonymous',
+          imageUrl: images[0],
+          images: images,
+          caption: content.trim(),
+          location: location?.trim() || null,
+          tags: tags || [],
+          createdAt: new Date().toISOString(),
+          isVerified: false,
+          userType: 'Photography Enthusiast',
+          likes: 0,
+          commentCount: 0,
+          isFeatured: false
+        }
+      });
     }
 
-    if (tag) {
-      query = query.contains('tags', [tag]);
-    }
-
-    // Apply pagination and ordering
-    query = query
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    const { data: posts, error, count } = await query;
-
-    if (error) {
-      console.error('Database error fetching posts:', error);
-      return res.status(500).json({ error: 'Failed to fetch posts' });
-    }
-
-    // Format posts for Flutter app - data is already joined
-    const formattedPosts = posts.map(post => ({
-      id: post.id,
-      userId: post.user_id,
-      userName: post.display_name || 'Anonymous',
-      imageUrl: post.images?.[0] || '',
-      images: post.images || [],
-      caption: post.caption || '',
-      location: post.location,
-      tags: post.tags || [],
-      createdAt: post.created_at,
-      isVerified: post.is_verified || false,
-      userType: post.user_type || 'Photography Enthusiast',
-      likes: post.likes_count || 0,
-      commentCount: post.comments_count || 0,
-      isFeatured: post.is_featured || false
-    }));
-
+    // Format response using the complete data from the view
     const response = {
       success: true,
-      posts: formattedPosts,
-      pagination: {
-        page: page,
-        limit: limit,
-        total: count || 0,
-        hasMore: (offset + limit) < (count || 0)
-      },
-      total: count || 0,
-      offset: offset
+      message: 'Post created successfully',
+      post: {
+        id: completePost.id,
+        userId: completePost.user_id,
+        userName: completePost.display_name || 'Anonymous',
+        imageUrl: completePost.images[0],
+        images: completePost.images,
+        caption: completePost.caption,
+        location: completePost.location,
+        tags: completePost.tags || [],
+        createdAt: completePost.created_at,
+        isVerified: completePost.is_verified || false,
+        userType: completePost.user_type || 'Photography Enthusiast',
+        likes: completePost.likes_count || 0,
+        commentCount: completePost.comments_count || 0,
+        isFeatured: completePost.is_featured || false
+      }
     };
 
-    console.log(`✅ Returned ${formattedPosts.length} posts`);
-    res.json(response);
+    res.status(201).json(response);
 
   } catch (error) {
-    console.error('Fetch posts error:', error);
-    res.status(500).json({ error: 'Server error fetching posts' });
+    console.error('Create post error:', error);
+    res.status(500).json({ error: 'Server error creating post' });
   }
 });
+
+// Helper function to ensure user profile exists
+async function ensureUserProfile(userId) {
+  try {
+    // Check if profile exists
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (existingProfile) {
+      console.log(`✅ Profile exists for user: ${userId}`);
+      return;
+    }
+
+    console.log(`📝 Creating missing profile for user: ${userId}`);
+
+    // Get user info from auth
+    const { data: authData } = await supabase.auth.admin.getUserById(userId);
+    const user = authData?.user;
+    
+    if (!user) {
+      console.log(`⚠️ Could not find auth user: ${userId}`);
+      return;
+    }
+
+    // Create profile
+    const displayName = user.email?.split('@')[0] || 'Anonymous';
+    
+    const { error: createError } = await supabase
+      .from('profiles')
+      .insert([{
+        id: userId,
+        display_name: displayName,
+        user_type: 'Photography Enthusiast',
+        is_verified: false
+      }]);
+
+    if (createError) {
+      console.error('Failed to create profile:', createError);
+    } else {
+      console.log(`✅ Created profile for user: ${userId} with name: ${displayName}`);
+    }
+  } catch (error) {
+    console.error('Error in ensureUserProfile:', error);
+  }
+}
+
 
 // Also update the single post endpoint
 app.get('/api/posts/:postId', async (req, res) => {
