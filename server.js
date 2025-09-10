@@ -673,7 +673,7 @@ const extractFirstNameFromDisplayName = (authUser) => {
   return emailPrefix;
 };
 
-//end of fetch first name from display_name
+///end of fech user profile
 
 
 
