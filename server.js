@@ -573,7 +573,7 @@ app.get('/api/posts', async (req, res) => {
                       const displayName = extractFirstNameFromDisplayName(user);
                       
                       userMap[userId] = {
-                          username: null, // No username in user_profiles
+                          username: null, // No username in profiles
                           display_name: displayName,
                           avatar_url: null,
                           is_verified: false,
@@ -673,7 +673,7 @@ const extractFirstNameFromDisplayName = (authUser) => {
   return emailPrefix;
 };
 
-///end of fech user profile
+// end of extractFirstNameFromDisplayName 
 
 
 
