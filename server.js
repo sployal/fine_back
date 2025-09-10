@@ -416,7 +416,7 @@ app.get('/api/posts', async (req, res) => {
       
       console.log(`📥 Fetching posts - Page: ${page}, Limit: ${limit}, UserId: ${userId}, Tag: ${tag}`);
       
-      // OPTION 1: Try to use the posts_with_users view first (if it references user_profiles)
+      // OPTION 1: Try to use the posts_with_users view first (if it references profiles table)
       try {
           let query = supabase
               .from('posts_with_users')
@@ -488,7 +488,7 @@ app.get('/api/posts', async (req, res) => {
           console.log('View not available, falling back to manual join');
       }
       
-      // OPTION 2: Manual approach using posts + user_profiles tables
+      // OPTION 2: Manual approach using posts + profiles tables (CORRECTED)
       let query = supabase
           .from('posts')
           .select(`
@@ -537,16 +537,20 @@ app.get('/api/posts', async (req, res) => {
           });
       }
 
-      // Get user profiles from user_profiles table (NOT profiles table)
+      // Get user profiles from PROFILES table (CORRECTED)
       const userIds = [...new Set(posts.map(post => post.user_id))];
       const { data: userProfiles, error: profilesError } = await supabase
-          .from('user_profiles')
+          .from('profiles') // CHANGED: from 'user_profiles' to 'profiles'
           .select('id, username, display_name, avatar_url, is_verified, user_type')
           .in('id', userIds);
 
-      console.log(`📊 Found ${userProfiles?.length || 0} user profiles for ${userIds.length} unique users`);
+      if (profilesError) {
+          console.error('Error fetching profiles:', profilesError);
+      }
 
-      // Create user lookup map from user_profiles
+      console.log(`📊 Found ${userProfiles?.length || 0} profiles for ${userIds.length} unique users`);
+
+      // Create user lookup map from profiles table
       const userMap = {};
       if (userProfiles && userProfiles.length > 0) {
           userProfiles.forEach(profile => {
@@ -560,10 +564,10 @@ app.get('/api/posts', async (req, res) => {
           });
       }
 
-      // For users without user_profiles, get display_name from auth.users
+      // For users without profiles, get display_name from auth.users
       const missingProfileUsers = userIds.filter(id => !userMap[id]);
       if (missingProfileUsers.length > 0) {
-          console.log(`⚠️ Missing user_profiles for ${missingProfileUsers.length} users, fetching from auth.users`);
+          console.log(`⚠️ Missing profiles for ${missingProfileUsers.length} users, fetching from auth.users`);
           
           for (const userId of missingProfileUsers) {
               try {
@@ -573,7 +577,7 @@ app.get('/api/posts', async (req, res) => {
                       const displayName = extractFirstNameFromDisplayName(user);
                       
                       userMap[userId] = {
-                          username: null, // No username in profiles
+                          username: null, // No username in profiles yet
                           display_name: displayName,
                           avatar_url: null,
                           is_verified: false,
@@ -604,7 +608,7 @@ app.get('/api/posts', async (req, res) => {
               user_type: 'Photography Enthusiast'
           };
 
-          // Priority: username from user_profiles > display_name from auth.users > Anonymous
+          // Priority: username from profiles > display_name from auth.users > Anonymous
           const userName = userInfo.username || userInfo.display_name || 'Anonymous';
 
           return {
@@ -625,7 +629,7 @@ app.get('/api/posts', async (req, res) => {
           };
       });
 
-      console.log(`✅ Returned ${formattedPosts.length} posts with user profile data`);
+      console.log(`✅ Returned ${formattedPosts.length} posts with profile data`);
 
       const response = {
           success: true,
