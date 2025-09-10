@@ -601,15 +601,14 @@ app.get('/api/posts', async (req, res) => {
       // Transform posts with user information for Flutter app
       const formattedPosts = posts.map(post => {
           const userInfo = userMap[post.user_id] || {
-              username: null,
               display_name: 'Anonymous',
               avatar_url: null,
               is_verified: false,
               user_type: 'Photography Enthusiast'
           };
 
-          // Priority: username from profiles > display_name from auth.users > Anonymous
-          const userName = userInfo.username || userInfo.display_name || 'Anonymous';
+          // Use display_name from profiles or fallback from auth.users
+          const userName = userInfo.display_name || 'Anonymous';
 
           return {
               id: post.id,
