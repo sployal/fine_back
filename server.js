@@ -369,18 +369,20 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
 });
 
 // Get posts endpoint with pagination
+// Get posts endpoint with pagination - USING THE VIEW
 app.get('/api/posts', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Max 50 posts per request
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
     const offset = (page - 1) * limit;
     const userId = req.query.user_id;
     const tag = req.query.tag;
 
     console.log(`📥 Fetching posts - Page: ${page}, Limit: ${limit}, UserId: ${userId}, Tag: ${tag}`);
 
+    // Use the posts_with_users view that already joins the data
     let query = supabase
-      .from('posts')
+      .from('posts_with_users')  // ← Use the view instead of posts table
       .select(`
         id,
         user_id,
@@ -392,12 +394,10 @@ app.get('/api/posts', async (req, res) => {
         likes_count,
         comments_count,
         is_featured,
-        profiles:user_id (
-          display_name,
-          avatar_url,
-          is_verified,
-          user_type
-        )
+        display_name,
+        avatar_url,
+        is_verified,
+        user_type
       `, { count: 'exact' });
 
     // Apply filters
@@ -421,19 +421,19 @@ app.get('/api/posts', async (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch posts' });
     }
 
-    // Format posts for Flutter app
+    // Format posts for Flutter app - data is already joined
     const formattedPosts = posts.map(post => ({
       id: post.id,
       userId: post.user_id,
-      userName: post.profiles?.display_name || 'Anonymous',
+      userName: post.display_name || 'Anonymous',
       imageUrl: post.images?.[0] || '',
       images: post.images || [],
       caption: post.caption || '',
       location: post.location,
       tags: post.tags || [],
       createdAt: post.created_at,
-      isVerified: post.profiles?.is_verified || false,
-      userType: post.profiles?.user_type || 'Photography Enthusiast',
+      isVerified: post.is_verified || false,
+      userType: post.user_type || 'Photography Enthusiast',
       likes: post.likes_count || 0,
       commentCount: post.comments_count || 0,
       isFeatured: post.is_featured || false
@@ -458,6 +458,64 @@ app.get('/api/posts', async (req, res) => {
   } catch (error) {
     console.error('Fetch posts error:', error);
     res.status(500).json({ error: 'Server error fetching posts' });
+  }
+});
+
+// Also update the single post endpoint
+app.get('/api/posts/:postId', async (req, res) => {
+  try {
+    const { postId } = req.params;
+
+    const { data: post, error } = await supabase
+      .from('posts_with_users')  // ← Use the view here too
+      .select(`
+        id,
+        user_id,
+        caption,
+        location,
+        tags,
+        images,
+        created_at,
+        likes_count,
+        comments_count,
+        is_featured,
+        display_name,
+        avatar_url,
+        is_verified,
+        user_type
+      `)
+      .eq('id', postId)
+      .single();
+
+    if (error || !post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const formattedPost = {
+      id: post.id,
+      userId: post.user_id,
+      userName: post.display_name || 'Anonymous',
+      imageUrl: post.images?.[0] || '',
+      images: post.images || [],
+      caption: post.caption || '',
+      location: post.location,
+      tags: post.tags || [],
+      createdAt: post.created_at,
+      isVerified: post.is_verified || false,
+      userType: post.user_type || 'Photography Enthusiast',
+      likes: post.likes_count || 0,
+      commentCount: post.comments_count || 0,
+      isFeatured: post.is_featured || false
+    };
+
+    res.json({
+      success: true,
+      post: formattedPost
+    });
+
+  } catch (error) {
+    console.error('Get single post error:', error);
+    res.status(500).json({ error: 'Server error fetching post' });
   }
 });
 
