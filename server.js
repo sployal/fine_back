@@ -405,6 +405,117 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
   }
 });
 
+// Add this GET /api/posts endpoint to your server (it's completely missing!)
+app.get('/api/posts', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    const offset = (page - 1) * limit;
+    const userId = req.query.user_id;
+    const tag = req.query.tag;
+
+    console.log(`📥 Fetching posts - Page: ${page}, Limit: ${limit}, UserId: ${userId}, Tag: ${tag}`);
+
+    // Use the posts_with_users view
+    let query = supabase
+      .from('posts_with_users')
+      .select(`
+        id,
+        user_id,
+        caption,
+        location,
+        tags,
+        images,
+        created_at,
+        likes_count,
+        comments_count,
+        is_featured,
+        display_name,
+        avatar_url,
+        is_verified,
+        user_type
+      `, { count: 'exact' });
+
+    // Apply filters
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    if (tag) {
+      query = query.contains('tags', [tag]);
+    }
+
+    // Apply pagination and ordering
+    query = query
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    const { data: posts, error, count } = await query;
+
+    if (error) {
+      console.error('Database error fetching posts:', error);
+      return res.status(500).json({ error: 'Failed to fetch posts' });
+    }
+
+    // Handle empty results
+    if (!posts || posts.length === 0) {
+      console.log('📭 No posts found');
+      return res.json({
+        success: true,
+        posts: [],
+        pagination: {
+          page: page,
+          limit: limit,
+          total: count || 0,
+          hasMore: false
+        },
+        total: count || 0,
+        offset: offset
+      });
+    }
+
+    // Format posts for Flutter app
+    const formattedPosts = posts.map(post => ({
+      id: post.id,
+      userId: post.user_id,
+      userName: post.display_name || 'Anonymous',
+      imageUrl: post.images?.[0] || '',
+      images: post.images || [],
+      caption: post.caption || '',
+      location: post.location,
+      tags: post.tags || [],
+      createdAt: post.created_at,
+      isVerified: post.is_verified || false,
+      userType: post.user_type || 'Photography Enthusiast',
+      likes: post.likes_count || 0,
+      commentCount: post.comments_count || 0,
+      isFeatured: post.is_featured || false
+    }));
+
+    const response = {
+      success: true,
+      posts: formattedPosts,
+      pagination: {
+        page: page,
+        limit: limit,
+        total: count || 0,
+        hasMore: (offset + limit) < (count || 0)
+      },
+      total: count || 0,
+      offset: offset
+    };
+
+    console.log(`✅ Returned ${formattedPosts.length} posts`);
+    res.json(response);
+
+  } catch (error) {
+    console.error('Fetch posts error:', error);
+    res.status(500).json({ error: 'Server error fetching posts' });
+  }
+});
+
+
+
 // Helper function to ensure user profile exists
 async function ensureUserProfile(userId) {
   try {
