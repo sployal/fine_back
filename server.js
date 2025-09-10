@@ -416,7 +416,7 @@ app.get('/api/posts', async (req, res) => {
       
       console.log(`📥 Fetching posts - Page: ${page}, Limit: ${limit}, UserId: ${userId}, Tag: ${tag}`);
       
-      // OPTION 1: Try to use the posts_with_users view first (if it references profiles table)
+      // OPTION 1: Try to use the posts_with_users view first (if it exists)
       try {
           let query = supabase
               .from('posts_with_users')
@@ -431,7 +431,6 @@ app.get('/api/posts', async (req, res) => {
                   likes_count,
                   comments_count,
                   is_featured,
-                  username,
                   display_name,
                   avatar_url,
                   is_verified,
@@ -457,7 +456,7 @@ app.get('/api/posts', async (req, res) => {
               const transformedPosts = posts.map(post => ({
                   id: post.id,
                   userId: post.user_id,
-                  userName: post.username || post.display_name || 'Anonymous',
+                  userName: post.display_name || 'Anonymous',
                   imageUrl: post.images?.[0] || '',
                   images: post.images || [],
                   caption: post.caption || '',
@@ -488,7 +487,7 @@ app.get('/api/posts', async (req, res) => {
           console.log('View not available, falling back to manual join');
       }
       
-      // OPTION 2: Manual approach using posts + profiles tables (CORRECTED)
+      // OPTION 2: Manual approach using posts + profiles tables
       let query = supabase
           .from('posts')
           .select(`
@@ -537,11 +536,11 @@ app.get('/api/posts', async (req, res) => {
           });
       }
 
-      // Get user profiles from PROFILES table (CORRECTED)
+      // Get user profiles from PROFILES table (REMOVED username from query)
       const userIds = [...new Set(posts.map(post => post.user_id))];
       const { data: userProfiles, error: profilesError } = await supabase
-          .from('profiles') // CHANGED: from 'user_profiles' to 'profiles'
-          .select('id, username, display_name, avatar_url, is_verified, user_type')
+          .from('profiles')
+          .select('id, display_name, avatar_url, is_verified, user_type') // REMOVED username
           .in('id', userIds);
 
       if (profilesError) {
@@ -555,7 +554,6 @@ app.get('/api/posts', async (req, res) => {
       if (userProfiles && userProfiles.length > 0) {
           userProfiles.forEach(profile => {
               userMap[profile.id] = {
-                  username: profile.username,
                   display_name: profile.display_name,
                   avatar_url: profile.avatar_url,
                   is_verified: profile.is_verified || false,
@@ -564,29 +562,36 @@ app.get('/api/posts', async (req, res) => {
           });
       }
 
-      // For users without profiles, get display_name from auth.users
-      const missingProfileUsers = userIds.filter(id => !userMap[id]);
-      if (missingProfileUsers.length > 0) {
-          console.log(`⚠️ Missing profiles for ${missingProfileUsers.length} users, fetching from auth.users`);
-          
-          for (const userId of missingProfileUsers) {
-              try {
-                  const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
-                  if (!userError && user) {
-                      // Extract first name from display_name or fallback to email prefix
+      // For ALL users (including those with profiles), get username from auth.users
+      console.log(`🔍 Fetching usernames from auth.users for ${userIds.length} users`);
+      
+      for (const userId of userIds) {
+          try {
+              const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
+              if (!userError && user) {
+                  // Get username from user_metadata
+                  const metadata = user.user_metadata || user.raw_user_meta_data || {};
+                  const username = metadata.username || metadata.user_name || null;
+                  
+                  // If user doesn't have a profile yet, create entry
+                  if (!userMap[userId]) {
                       const displayName = extractFirstNameFromDisplayName(user);
-                      
                       userMap[userId] = {
-                          username: null, // No username in profiles yet
                           display_name: displayName,
                           avatar_url: null,
                           is_verified: false,
                           user_type: 'Photography Enthusiast'
                       };
-                      console.log(`✅ Fetched display name for user ${userId}: ${displayName}`);
                   }
-              } catch (authError) {
-                  console.error(`Failed to fetch auth user ${userId}:`, authError);
+                  
+                  // Add username to existing or new user data
+                  userMap[userId].username = username;
+                  
+                  console.log(`✅ User ${userId}: username="${username}", display_name="${userMap[userId].display_name}"`);
+              }
+          } catch (authError) {
+              console.error(`Failed to fetch auth user ${userId}:`, authError);
+              if (!userMap[userId]) {
                   userMap[userId] = {
                       username: null,
                       display_name: 'Anonymous',
@@ -601,14 +606,15 @@ app.get('/api/posts', async (req, res) => {
       // Transform posts with user information for Flutter app
       const formattedPosts = posts.map(post => {
           const userInfo = userMap[post.user_id] || {
+              username: null,
               display_name: 'Anonymous',
               avatar_url: null,
               is_verified: false,
               user_type: 'Photography Enthusiast'
           };
 
-          // Use display_name from profiles or fallback from auth.users
-          const userName = userInfo.display_name || 'Anonymous';
+          // Prioritize username, fallback to display_name
+          const userName = userInfo.username || userInfo.display_name || 'Anonymous';
 
           return {
               id: post.id,
