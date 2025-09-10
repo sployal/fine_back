@@ -406,32 +406,31 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
 });
 
 // Add this GET /api/posts endpoint to your server (it's completely missing!)
-// Get posts with user information - FIXED to use profiles table like your original server
+// Get posts with user information - CORRECTED for YOUR database schema
 app.get('/api/posts', async (req, res) => {
   try {
-      const { page = 1, limit = 10, type } = req.query;
+      const { page = 1, limit = 10 } = req.query;
       const offset = (page - 1) * limit;
+      const userId = req.query.user_id;
+      const tag = req.query.tag;
       
-      console.log(`📥 Fetching posts - Page: ${page}, Limit: ${limit}, Type: ${type}`);
+      console.log(`📥 Fetching posts - Page: ${page}, Limit: ${limit}, UserId: ${userId}, Tag: ${tag}`);
       
-      // OPTION 1: Use the posts_with_users view if it exists (like your original server)
+      // OPTION 1: Try to use the posts_with_users view first
       try {
           let query = supabase
-              .from('posts_with_users')  // Use the view from your original server
+              .from('posts_with_users')
               .select(`
                   id,
                   user_id,
-                  type,
-                  title,
-                  content,
-                  images,
+                  caption,
+                  location,
                   tags,
-                  recipe_data,
-                  likes,
-                  shares,
-                  comment_count,
+                  images,
                   created_at,
-                  updated_at,
+                  likes_count,
+                  comments_count,
+                  is_featured,
                   display_name,
                   avatar_url,
                   is_verified,
@@ -439,8 +438,12 @@ app.get('/api/posts', async (req, res) => {
               `)
               .order('created_at', { ascending: false });
           
-          if (type && type !== 'all') {
-              query = query.eq('type', type);
+          // Apply filters
+          if (userId) {
+              query = query.eq('user_id', userId);
+          }
+          if (tag) {
+              query = query.contains('tags', [tag]);
           }
           
           const { data: posts, error } = await query
@@ -449,67 +452,67 @@ app.get('/api/posts', async (req, res) => {
           if (!error && posts) {
               console.log(`✅ Successfully fetched ${posts.length} posts using view`);
               
-              // Transform posts using profile data from the view
+              // Transform posts for your Flutter app format
               const transformedPosts = posts.map(post => ({
                   id: post.id,
-                  type: post.type,
-                  title: post.title,
-                  content: post.content,
+                  userId: post.user_id,
+                  userName: post.display_name || 'Anonymous',
+                  imageUrl: post.images?.[0] || '',
                   images: post.images || [],
+                  caption: post.caption || '',
+                  location: post.location,
                   tags: post.tags || [],
-                  likes: post.likes || 0,
-                  comments: post.comment_count || 0,
-                  shares: post.shares || 0,
-                  liked: false,
-                  bookmarked: false,
-                  timestamp: new Date(post.created_at).toLocaleString(),
-                  author: {
-                      name: post.display_name || 'Anonymous',
-                      username: post.display_name || 'anonymous',
-                      avatar: createAvatarInitials(post.display_name || 'Anonymous')
-                  },
-                  recipe: post.recipe_data
+                  createdAt: post.created_at,
+                  isVerified: post.is_verified || false,
+                  userType: post.user_type || 'Photography Enthusiast',
+                  likes: post.likes_count || 0,
+                  commentCount: post.comments_count || 0,
+                  isFeatured: post.is_featured || false
               }));
 
               return res.json({
+                  success: true,
                   posts: transformedPosts,
                   pagination: {
                       page: parseInt(page),
                       limit: parseInt(limit),
                       total: posts.length,
                       hasMore: posts.length === parseInt(limit)
-                  }
+                  },
+                  total: posts.length,
+                  offset: offset
               });
           }
       } catch (viewError) {
           console.log('View not available, falling back to manual join');
       }
       
-      // OPTION 2: Manual join with profiles table (fallback)
+      // OPTION 2: Manual approach using your actual table structure
       let query = supabase
           .from('posts')
           .select(`
               id,
               user_id,
-              type,
-              title,
-              content,
-              images,
+              caption,
+              location,
               tags,
-              recipe_data,
-              likes,
-              shares,
-              comment_count,
+              images,
               created_at,
-              updated_at
-          `)
+              likes_count,
+              comments_count,
+              is_featured
+          `, { count: 'exact' })
           .order('created_at', { ascending: false });
       
-      if (type && type !== 'all') {
-          query = query.eq('type', type);
+      // Apply filters
+      if (userId) {
+          query = query.eq('user_id', userId);
+      }
+      if (tag) {
+          query = query.contains('tags', [tag]);
       }
       
-      const { data: posts, error } = await query
+      const { data: posts, error, count } = await query
           .range(offset, offset + parseInt(limit) - 1);
 
       if (error) {
@@ -518,18 +521,22 @@ app.get('/api/posts', async (req, res) => {
       }
 
       if (!posts || posts.length === 0) {
+          console.log('📭 No posts found');
           return res.json({
+              success: true,
               posts: [],
               pagination: {
                   page: parseInt(page),
                   limit: parseInt(limit),
-                  total: 0,
+                  total: count || 0,
                   hasMore: false
-              }
+              },
+              total: count || 0,
+              offset: offset
           });
       }
 
-      // Get user profiles from profiles table (like your original server)
+      // Get user profiles from profiles table
       const userIds = [...new Set(posts.map(post => post.user_id))];
       const { data: profiles, error: profilesError } = await supabase
           .from('profiles')
@@ -543,106 +550,114 @@ app.get('/api/posts', async (req, res) => {
       if (profiles && profiles.length > 0) {
           profiles.forEach(profile => {
               userMap[profile.id] = {
-                  fullName: profile.display_name || 'Anonymous',
-                  username: profile.display_name || 'anonymous',
-                  avatarUrl: profile.avatar_url,
-                  isVerified: profile.is_verified || false,
-                  userType: profile.user_type || 'Photography Enthusiast'
+                  display_name: profile.display_name || 'Anonymous',
+                  avatar_url: profile.avatar_url,
+                  is_verified: profile.is_verified || false,
+                  user_type: profile.user_type || 'Photography Enthusiast'
               };
           });
       }
 
-      // For users without profiles, try to get from auth as fallback
+      // For users without profiles, try to create them from auth data
       const missingProfileUsers = userIds.filter(id => !userMap[id]);
       if (missingProfileUsers.length > 0) {
-          console.log(`⚠️ Missing profiles for ${missingProfileUsers.length} users, fetching from auth`);
+          console.log(`⚠️ Missing profiles for ${missingProfileUsers.length} users, creating profiles`);
           
           for (const userId of missingProfileUsers) {
               try {
                   const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
                   if (!userError && user) {
-                      const authUserInfo = getUserInfoFromAuth(user);
-                      userMap[userId] = {
-                          fullName: authUserInfo.fullName,
-                          username: authUserInfo.username,
-                          avatarUrl: null,
-                          isVerified: false,
-                          userType: 'Photography Enthusiast'
-                      };
+                      const displayName = extractDisplayName(user);
                       
-                      // Optionally create missing profile
-                      await createMissingProfile(userId, authUserInfo);
+                      // Create missing profile
+                      const { error: createError } = await supabase
+                          .from('profiles')
+                          .insert([{
+                              id: userId,
+                              display_name: displayName,
+                              user_type: 'Photography Enthusiast',
+                              is_verified: false
+                          }]);
+
+                      if (!createError) {
+                          userMap[userId] = {
+                              display_name: displayName,
+                              avatar_url: null,
+                              is_verified: false,
+                              user_type: 'Photography Enthusiast'
+                          };
+                          console.log(`✅ Created profile for user: ${userId} with name: ${displayName}`);
+                      }
                   }
               } catch (authError) {
-                  console.error(`Failed to fetch auth data for user ${userId}:`, authError);
+                  console.error(`Failed to fetch/create profile for user ${userId}:`, authError);
                   userMap[userId] = {
-                      fullName: 'Anonymous',
-                      username: 'anonymous',
-                      avatarUrl: null,
-                      isVerified: false,
-                      userType: 'Photography Enthusiast'
+                      display_name: 'Anonymous',
+                      avatar_url: null,
+                      is_verified: false,
+                      user_type: 'Photography Enthusiast'
                   };
               }
           }
       }
 
-      // Transform posts with complete user information
-      const transformedPosts = posts.map(post => {
+      // Transform posts with user information for Flutter app
+      const formattedPosts = posts.map(post => {
           const userInfo = userMap[post.user_id] || {
-              fullName: 'Anonymous',
-              username: 'anonymous',
-              avatarUrl: null,
-              isVerified: false,
-              userType: 'Photography Enthusiast'
+              display_name: 'Anonymous',
+              avatar_url: null,
+              is_verified: false,
+              user_type: 'Photography Enthusiast'
           };
 
           return {
               id: post.id,
-              type: post.type,
-              title: post.title,
-              content: post.content,
+              userId: post.user_id,
+              userName: userInfo.display_name,
+              imageUrl: post.images?.[0] || '',
               images: post.images || [],
+              caption: post.caption || '',
+              location: post.location,
               tags: post.tags || [],
-              likes: post.likes || 0,
-              comments: post.comment_count || 0,
-              shares: post.shares || 0,
-              liked: false,
-              bookmarked: false,
-              timestamp: new Date(post.created_at).toLocaleString(),
-              author: {
-                  name: userInfo.fullName,
-                  username: userInfo.username,
-                  avatar: userInfo.avatarUrl || createAvatarInitials(userInfo.fullName)
-              },
-              recipe: post.recipe_data
+              createdAt: post.created_at,
+              isVerified: userInfo.is_verified,
+              userType: userInfo.user_type,
+              likes: post.likes_count || 0,
+              commentCount: post.comments_count || 0,
+              isFeatured: post.is_featured || false
           };
       });
 
-      console.log(`✅ Returned ${transformedPosts.length} posts with profile data`);
+      console.log(`✅ Returned ${formattedPosts.length} posts with profile data`);
 
-      res.json({
-          posts: transformedPosts,
+      const response = {
+          success: true,
+          posts: formattedPosts,
           pagination: {
               page: parseInt(page),
               limit: parseInt(limit),
-              total: posts.length,
-              hasMore: posts.length === parseInt(limit)
-          }
-      });
+              total: count || 0,
+              hasMore: (offset + parseInt(limit)) < (count || 0)
+          },
+          total: count || 0,
+          offset: offset
+      };
+
+      res.json(response);
+
   } catch (error) {
       console.error('Get posts error:', error);
       res.status(500).json({ error: 'Failed to fetch posts' });
   }
 });
 
-// Improved function to extract user info from auth metadata
-const getUserInfoFromAuth = (authUser) => {
-  if (!authUser) return { fullName: 'Anonymous', username: 'anonymous' };
+// Helper function to extract display name from auth user metadata
+const extractDisplayName = (authUser) => {
+  if (!authUser) return 'Anonymous';
   
-  // Try multiple metadata sources
+  // Try different metadata sources
   const metadata = authUser.user_metadata || authUser.raw_user_meta_data || {};
   
-  // Get display name from various sources
   let displayName = metadata.display_name || 
                    metadata.full_name || 
                    metadata.name || 
@@ -650,46 +665,12 @@ const getUserInfoFromAuth = (authUser) => {
                    authUser.email?.split('@')[0] || 
                    'Anonymous';
   
-  // Clean up the display name
-  displayName = displayName.trim();
+  console.log(`👤 Extracted display name: "${displayName}" from user: ${authUser.id}`);
   
-  // For username, prefer shorter version
-  let username = metadata.username || 
-                metadata.display_name || 
-                displayName.split(' ')[0] || 
-                authUser.email?.split('@')[0] || 
-                'anonymous';
-  
-  console.log(`👤 Extracted user info - Name: "${displayName}", Username: "${username}" from metadata:`, metadata);
-  
-  return {
-      fullName: displayName,
-      username: username,
-      email: authUser.email
-  };
+  return displayName.trim();
 };
 
-// Helper function to create missing profile
-const createMissingProfile = async (userId, userInfo) => {
-  try {
-      const { error } = await supabase
-          .from('profiles')
-          .insert([{
-              id: userId,
-              display_name: userInfo.fullName,
-              user_type: 'Photography Enthusiast',
-              is_verified: false
-          }])
-          .select()
-          .single();
-
-      if (!error) {
-          console.log(`✅ Created missing profile for user: ${userId} with name: ${userInfo.fullName}`);
-      }
-  } catch (error) {
-      console.error(`Failed to create profile for user ${userId}:`, error);
-  }
-};
+////end of new fetch user profile
 
 
 
