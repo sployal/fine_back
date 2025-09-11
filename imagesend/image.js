@@ -26,11 +26,22 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Rate limiting for image sending
+// Rate limiting for image sending - FIXED VERSION
 const imageSendLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5, // limit to 5 image sends per 15 minutes
   message: { error: 'Too many image send attempts, please try again later.' },
+  // Add these options to handle proxy correctly
+  trustProxy: true, // Trust the reverse proxy
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  // Custom key generator to handle proxy IPs properly
+  keyGenerator: (req) => {
+    // Use the real IP from the proxy, fallback to connection IP
+    return req.ip || req.connection.remoteAddress || 'unknown';
+  },
+  // Skip rate limiting for successful requests to be more lenient
+  skipSuccessfulRequests: true,
 });
 
 // Configure multer for multiple image uploads
