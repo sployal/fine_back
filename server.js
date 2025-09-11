@@ -12,6 +12,9 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// TRUST PROXY CONFIGURATION - CRITICAL FOR RENDER DEPLOYMENT
+app.set('trust proxy', 1); // Trust first proxy
+
 // Environment variables validation
 const requiredEnvVars = [
   'SUPABASE_URL',
@@ -57,7 +60,7 @@ app.use(cors({
   credentials: true
 }));
 
-// Rate limiting
+// Rate limiting - Configured for proxy environment
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // limit each IP to 100 requests per windowMs
@@ -70,6 +73,8 @@ const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10, // limit uploads to 10 per 15 minutes
   message: { error: 'Too many upload attempts, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 app.use(limiter);
@@ -153,7 +158,8 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '1.0.0',
+    proxy_trust: app.get('trust proxy')
   });
 });
 
@@ -265,6 +271,7 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
         likes_count,
         comments_count,
         is_featured,
+        username,
         display_name,
         avatar_url,
         is_verified,
@@ -298,14 +305,14 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
       });
     }
 
-    // Format response using the complete data from the view
+    // Format response using the complete data from the view - prioritize username
     const response = {
       success: true,
       message: 'Post created successfully',
       post: {
         id: completePost.id,
         userId: completePost.user_id,
-        userName: completePost.display_name || 'Anonymous',
+        userName: completePost.username || completePost.display_name || 'Anonymous',
         imageUrl: completePost.images[0],
         images: completePost.images,
         caption: completePost.caption,
@@ -328,7 +335,7 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
   }
 });
 
-// Get posts endpoint
+// Get posts endpoint - CORRECTED to prioritize username over display_name
 app.get('/api/posts', async (req, res) => {
   try {
       const { page = 1, limit = 10 } = req.query;
@@ -375,11 +382,11 @@ app.get('/api/posts', async (req, res) => {
           if (!error && posts) {
               console.log(`✅ Successfully fetched ${posts.length} posts using view`);
               
-              // Transform posts for your Flutter app format
+              // Transform posts for your Flutter app format - PRIORITIZE USERNAME
               const transformedPosts = posts.map(post => ({
                   id: post.id,
                   userId: post.user_id,
-                  userName: post.username || post.display_name || 'Anonymous',
+                  userName: post.username || post.display_name || 'Anonymous', // USERNAME FIRST
                   imageUrl: post.images?.[0] || '',
                   images: post.images || [],
                   caption: post.caption || '',
@@ -459,7 +466,7 @@ app.get('/api/posts', async (req, res) => {
           });
       }
 
-      // Get user profiles from PROFILES table
+      // Get user profiles from PROFILES table - PRIORITIZE USERNAME
       const userIds = [...new Set(posts.map(post => post.user_id))];
       const { data: userProfiles, error: profilesError } = await supabase
           .from('profiles')
@@ -472,7 +479,7 @@ app.get('/api/posts', async (req, res) => {
 
       console.log(`📊 Found ${userProfiles?.length || 0} profiles for ${userIds.length} unique users`);
 
-      // Create user lookup map from profiles table
+      // Create user lookup map from profiles table - PRIORITIZE USERNAME
       const userMap = {};
       if (userProfiles && userProfiles.length > 0) {
           userProfiles.forEach(profile => {
@@ -486,7 +493,7 @@ app.get('/api/posts', async (req, res) => {
           });
       }
 
-      // For users without profiles, get display_name from auth.users
+      // For users without profiles, get username from auth.users
       const missingProfileUsers = userIds.filter(id => !userMap[id]);
       if (missingProfileUsers.length > 0) {
           console.log(`⚠️ Missing profiles for ${missingProfileUsers.length} users, fetching from auth.users`);
@@ -495,22 +502,22 @@ app.get('/api/posts', async (req, res) => {
               try {
                   const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
                   if (!userError && user) {
-                      const displayName = extractFirstNameFromDisplayName(user);
+                      const username = extractUsernameFromAuth(user);
                       
                       userMap[userId] = {
-                          username: null,
-                          display_name: displayName,
+                          username: username,
+                          display_name: null,
                           avatar_url: null,
                           is_verified: false,
                           user_type: 'Photography Enthusiast'
                       };
-                      console.log(`✅ Fetched display name for user ${userId}: ${displayName}`);
+                      console.log(`✅ Fetched username for user ${userId}: ${username}`);
                   }
               } catch (authError) {
                   console.error(`Failed to fetch auth user ${userId}:`, authError);
                   userMap[userId] = {
-                      username: null,
-                      display_name: 'Anonymous',
+                      username: 'Anonymous',
+                      display_name: null,
                       avatar_url: null,
                       is_verified: false,
                       user_type: 'Photography Enthusiast'
@@ -519,16 +526,18 @@ app.get('/api/posts', async (req, res) => {
           }
       }
 
-      // Transform posts with user information for Flutter app
+      // Transform posts with user information for Flutter app - PRIORITIZE USERNAME
       const formattedPosts = posts.map(post => {
           const userInfo = userMap[post.user_id] || {
-              display_name: 'Anonymous',
+              username: 'Anonymous',
+              display_name: null,
               avatar_url: null,
               is_verified: false,
               user_type: 'Photography Enthusiast'
           };
 
-          const userName = userInfo.display_name || 'Anonymous';
+          // PRIORITIZE USERNAME OVER DISPLAY_NAME
+          const userName = userInfo.username || userInfo.display_name || 'Anonymous';
 
           return {
               id: post.id,
@@ -571,24 +580,36 @@ app.get('/api/posts', async (req, res) => {
   }
 });
 
-// Helper function to extract first name from display_name in auth.users
-const extractFirstNameFromDisplayName = (authUser) => {
+// Helper function to extract username from auth user - CORRECTED
+const extractUsernameFromAuth = (authUser) => {
   if (!authUser) return 'Anonymous';
   
   const metadata = authUser.user_metadata || authUser.raw_user_meta_data || {};
   
+  // Try to get username first, then fallback to other fields
+  let username = metadata.username || 
+                metadata.preferred_username ||
+                metadata.user_name;
+  
+  if (username && typeof username === 'string') {
+      console.log(`👤 Found username: "${username}" for user: ${authUser.id}`);
+      return username.trim();
+  }
+  
+  // If no username, try display_name and extract first part
   let displayName = metadata.display_name || 
                    metadata.full_name || 
                    metadata.name;
-  
+                   
   if (displayName && typeof displayName === 'string') {
-      const firstName = displayName.trim().split(' ')[0];
-      console.log(`👤 Extracted first name: "${firstName}" from display_name: "${displayName}" for user: ${authUser.id}`);
-      return firstName;
+      const firstPart = displayName.trim().split(' ')[0];
+      console.log(`👤 Extracted username from display_name: "${firstPart}" from "${displayName}" for user: ${authUser.id}`);
+      return firstPart;
   }
   
+  // Last fallback to email prefix
   const emailPrefix = authUser.email?.split('@')[0] || 'Anonymous';
-  console.log(`👤 No display_name found, using email prefix: "${emailPrefix}" for user: ${authUser.id}`);
+  console.log(`👤 No username/display_name found, using email prefix: "${emailPrefix}" for user: ${authUser.id}`);
   
   return emailPrefix;
 };
@@ -617,13 +638,14 @@ async function ensureUserProfile(userId) {
       return;
     }
 
-    const displayName = user.email?.split('@')[0] || 'Anonymous';
+    const username = extractUsernameFromAuth(user);
     
     const { error: createError } = await supabase
       .from('profiles')
       .insert([{
         id: userId,
-        display_name: displayName,
+        username: username,
+        display_name: username, // Set display_name same as username initially
         user_type: 'Photography Enthusiast',
         is_verified: false
       }]);
@@ -631,14 +653,14 @@ async function ensureUserProfile(userId) {
     if (createError) {
       console.error('Failed to create profile:', createError);
     } else {
-      console.log(`✅ Created profile for user: ${userId} with name: ${displayName}`);
+      console.log(`✅ Created profile for user: ${userId} with username: ${username}`);
     }
   } catch (error) {
     console.error('Error in ensureUserProfile:', error);
   }
 }
 
-// Get single post endpoint (FIXED: Removed duplicate)
+// Get single post endpoint
 app.get('/api/posts/:postId', async (req, res) => {
   try {
     const { postId } = req.params;
@@ -656,6 +678,7 @@ app.get('/api/posts/:postId', async (req, res) => {
         likes_count,
         comments_count,
         is_featured,
+        username,
         display_name,
         avatar_url,
         is_verified,
@@ -671,7 +694,7 @@ app.get('/api/posts/:postId', async (req, res) => {
     const formattedPost = {
       id: post.id,
       userId: post.user_id,
-      userName: post.display_name || 'Anonymous',
+      userName: post.username || post.display_name || 'Anonymous', // USERNAME FIRST
       imageUrl: post.images?.[0] || '',
       images: post.images || [],
       caption: post.caption || '',
@@ -795,4 +818,5 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 Health check: http://localhost:${PORT}/api/health`);
   console.log(`🔐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🛡️ Trust proxy enabled: ${app.get('trust proxy')}`);
 });
