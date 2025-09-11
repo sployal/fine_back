@@ -9,6 +9,7 @@ const helmet = require('helmet');
 const compression = require('compression');
 require('dotenv').config();
 
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -46,6 +47,9 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// Import image send routes
+const imageRoutes = require('./imagesend/image');
 
 // Middleware
 app.use(helmet());
@@ -242,6 +246,9 @@ app.get('/api/health', (req, res) => {
     version: '1.0.0'
   });
 });
+
+// Mount image send routes
+app.use('/api/images', imageRoutes);
 
 // Upload images endpoint
 app.post('/api/upload-images', uploadLimiter, authenticateUser, upload.array('images', 5), async (req, res) => {
