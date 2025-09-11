@@ -9,7 +9,6 @@ const helmet = require('helmet');
 const compression = require('compression');
 require('dotenv').config();
 
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -47,9 +46,6 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-
-// Import image send routes
-const imageRoutes = require('./imagesend/image');
 
 // Middleware
 app.use(helmet());
@@ -150,92 +146,6 @@ const uploadToCloudinary = (buffer, originalName) => {
   });
 };
 
-// Alternative authentication approach if the main one fails
-const authenticateUserAlternative = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Missing or invalid authorization header' });
-    }
-
-    const token = authHeader.split(' ')[1];
-    
-    // Try direct JWT verification first
-    try {
-      const jwt = require('jsonwebtoken');
-      const decoded = jwt.decode(token, { complete: true });
-      
-      if (!decoded) {
-        throw new Error('Invalid JWT format');
-      }
-      
-      console.log('🔐 JWT payload:', decoded.payload);
-      
-      // Then verify with Supabase
-      const response = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'apikey': process.env.SUPABASE_SERVICE_KEY
-        }
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.log('❌ Supabase API error:', response.status, errorText);
-        throw new Error(`Supabase API error: ${response.status}`);
-      }
-      
-      const userData = await response.json();
-      console.log('✅ User data from Supabase:', userData.id, userData.email);
-      
-      req.user = userData;
-      next();
-      
-    } catch (jwtError) {
-      console.log('❌ JWT or API error:', jwtError.message);
-      return res.status(401).json({ error: 'Invalid token format or expired' });
-    }
-    
-  } catch (error) {
-    console.error('❌ Auth middleware error:', error);
-    res.status(401).json({ error: 'Authentication failed' });
-  }
-};
-const getUserProfile = async (userId) => {
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('display_name, avatar_url, is_verified, user_type')
-      .eq('id', userId)
-      .single();
-
-    if (error) {
-      console.log('Profile fetch error:', error.message);
-      return {
-        display_name: 'Anonymous',
-        avatar_url: null,
-        is_verified: false,
-        user_type: 'Photography Enthusiast'
-      };
-    }
-
-    return {
-      display_name: data.display_name || 'Anonymous',
-      avatar_url: data.avatar_url,
-      is_verified: data.is_verified || false,
-      user_type: data.user_type || 'Photography Enthusiast'
-    };
-  } catch (error) {
-    console.error('Error fetching user profile:', error);
-    return {
-      display_name: 'Anonymous',
-      avatar_url: null,
-      is_verified: false,
-      user_type: 'Photography Enthusiast'
-    };
-  }
-};
-
 // Routes
 
 // Health check endpoint
@@ -247,8 +157,15 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Mount image send routes
-app.use('/api/images', imageRoutes);
+// Try to import image routes with error handling
+try {
+  const imageRoutes = require('./imagesend/image');
+  app.use('/api/images', imageRoutes);
+  console.log('✅ Image routes loaded successfully');
+} catch (error) {
+  console.error('⚠️ Failed to load image routes:', error.message);
+  console.log('📝 Image sending functionality will be disabled');
+}
 
 // Upload images endpoint
 app.post('/api/upload-images', uploadLimiter, authenticateUser, upload.array('images', 5), async (req, res) => {
@@ -285,7 +202,6 @@ app.post('/api/upload-images', uploadLimiter, authenticateUser, upload.array('im
 });
 
 // Create post endpoint
-// Create post endpoint - IMPROVED VERSION
 app.post('/api/posts', authenticateUser, async (req, res) => {
   try {
     const { content, tags = [], images = [], location, userId } = req.body;
@@ -412,8 +328,7 @@ app.post('/api/posts', authenticateUser, async (req, res) => {
   }
 });
 
-// Add this GET /api/posts endpoint to your server (it's completely missing!)
-// Get posts with user information - FIXED to use user_profiles table
+// Get posts endpoint
 app.get('/api/posts', async (req, res) => {
   try {
       const { page = 1, limit = 10 } = req.query;
@@ -423,7 +338,7 @@ app.get('/api/posts', async (req, res) => {
       
       console.log(`📥 Fetching posts - Page: ${page}, Limit: ${limit}, UserId: ${userId}, Tag: ${tag}`);
       
-      // OPTION 1: Try to use the posts_with_users view first (if it references profiles table)
+      // Try to use the posts_with_users view first
       try {
           let query = supabase
               .from('posts_with_users')
@@ -495,7 +410,7 @@ app.get('/api/posts', async (req, res) => {
           console.log('View not available, falling back to manual join');
       }
       
-      // OPTION 2: Manual approach using posts + profiles tables (CORRECTED)
+      // Manual approach using posts + profiles tables
       let query = supabase
           .from('posts')
           .select(`
@@ -544,10 +459,10 @@ app.get('/api/posts', async (req, res) => {
           });
       }
 
-      // Get user profiles from PROFILES table (CORRECTED)
+      // Get user profiles from PROFILES table
       const userIds = [...new Set(posts.map(post => post.user_id))];
       const { data: userProfiles, error: profilesError } = await supabase
-          .from('profiles') // CHANGED: from 'user_profiles' to 'profiles'
+          .from('profiles')
           .select('id, username, display_name, avatar_url, is_verified, user_type')
           .in('id', userIds);
 
@@ -580,11 +495,10 @@ app.get('/api/posts', async (req, res) => {
               try {
                   const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
                   if (!userError && user) {
-                      // Extract first name from display_name or fallback to email prefix
                       const displayName = extractFirstNameFromDisplayName(user);
                       
                       userMap[userId] = {
-                          username: null, // No username in profiles yet
+                          username: null,
                           display_name: displayName,
                           avatar_url: null,
                           is_verified: false,
@@ -614,7 +528,6 @@ app.get('/api/posts', async (req, res) => {
               user_type: 'Photography Enthusiast'
           };
 
-          // Use display_name from profiles or fallback from auth.users
           const userName = userInfo.display_name || 'Anonymous';
 
           return {
@@ -662,35 +575,27 @@ app.get('/api/posts', async (req, res) => {
 const extractFirstNameFromDisplayName = (authUser) => {
   if (!authUser) return 'Anonymous';
   
-  // Try to get display_name from user metadata or raw_user_meta_data
   const metadata = authUser.user_metadata || authUser.raw_user_meta_data || {};
   
   let displayName = metadata.display_name || 
                    metadata.full_name || 
                    metadata.name;
   
-  // If we have a display_name, extract the first name
   if (displayName && typeof displayName === 'string') {
       const firstName = displayName.trim().split(' ')[0];
       console.log(`👤 Extracted first name: "${firstName}" from display_name: "${displayName}" for user: ${authUser.id}`);
       return firstName;
   }
   
-  // Fallback to email prefix if no display_name
   const emailPrefix = authUser.email?.split('@')[0] || 'Anonymous';
   console.log(`👤 No display_name found, using email prefix: "${emailPrefix}" for user: ${authUser.id}`);
   
   return emailPrefix;
 };
 
-// end of extractFirstNameFromDisplayName 
-
-
-
 // Helper function to ensure user profile exists
 async function ensureUserProfile(userId) {
   try {
-    // Check if profile exists
     const { data: existingProfile } = await supabase
       .from('profiles')
       .select('id')
@@ -704,7 +609,6 @@ async function ensureUserProfile(userId) {
 
     console.log(`📝 Creating missing profile for user: ${userId}`);
 
-    // Get user info from auth
     const { data: authData } = await supabase.auth.admin.getUserById(userId);
     const user = authData?.user;
     
@@ -713,7 +617,6 @@ async function ensureUserProfile(userId) {
       return;
     }
 
-    // Create profile
     const displayName = user.email?.split('@')[0] || 'Anonymous';
     
     const { error: createError } = await supabase
@@ -735,14 +638,13 @@ async function ensureUserProfile(userId) {
   }
 }
 
-
-// Also update the single post endpoint
+// Get single post endpoint (FIXED: Removed duplicate)
 app.get('/api/posts/:postId', async (req, res) => {
   try {
     const { postId } = req.params;
 
     const { data: post, error } = await supabase
-      .from('posts_with_users')  // ← Use the view here too
+      .from('posts_with_users')
       .select(`
         id,
         user_id,
@@ -802,7 +704,6 @@ app.post('/api/posts/:postId/like', authenticateUser, async (req, res) => {
 
     console.log(`👍 Toggle like for post: ${postId} by user: ${userId}`);
 
-    // Check if user already liked the post
     const { data: existingLike } = await supabase
       .from('post_likes')
       .select('id')
@@ -814,7 +715,6 @@ app.post('/api/posts/:postId/like', authenticateUser, async (req, res) => {
     let likesCount = 0;
 
     if (existingLike) {
-      // Unlike: Remove the like
       const { error: unlikeError } = await supabase
         .from('post_likes')
         .delete()
@@ -828,7 +728,6 @@ app.post('/api/posts/:postId/like', authenticateUser, async (req, res) => {
 
       liked = false;
     } else {
-      // Like: Add the like
       const { error: likeError } = await supabase
         .from('post_likes')
         .insert([{
@@ -845,7 +744,6 @@ app.post('/api/posts/:postId/like', authenticateUser, async (req, res) => {
       liked = true;
     }
 
-    // Get updated likes count
     const { count } = await supabase
       .from('post_likes')
       .select('*', { count: 'exact', head: true })
@@ -853,7 +751,6 @@ app.post('/api/posts/:postId/like', authenticateUser, async (req, res) => {
 
     likesCount = count || 0;
 
-    // Update likes count in posts table
     await supabase
       .from('posts')
       .update({ likes_count: likesCount })
@@ -871,66 +768,6 @@ app.post('/api/posts/:postId/like', authenticateUser, async (req, res) => {
   } catch (error) {
     console.error('Toggle like error:', error);
     res.status(500).json({ error: 'Server error toggling like' });
-  }
-});
-
-// Get single post endpoint
-app.get('/api/posts/:postId', async (req, res) => {
-  try {
-    const { postId } = req.params;
-
-    const { data: post, error } = await supabase
-      .from('posts')
-      .select(`
-        id,
-        user_id,
-        caption,
-        location,
-        tags,
-        images,
-        created_at,
-        likes_count,
-        comments_count,
-        is_featured,
-        profiles:user_id (
-          display_name,
-          avatar_url,
-          is_verified,
-          user_type
-        )
-      `)
-      .eq('id', postId)
-      .single();
-
-    if (error || !post) {
-      return res.status(404).json({ error: 'Post not found' });
-    }
-
-    const formattedPost = {
-      id: post.id,
-      userId: post.user_id,
-      userName: post.profiles?.display_name || 'Anonymous',
-      imageUrl: post.images?.[0] || '',
-      images: post.images || [],
-      caption: post.caption || '',
-      location: post.location,
-      tags: post.tags || [],
-      createdAt: post.created_at,
-      isVerified: post.profiles?.is_verified || false,
-      userType: post.profiles?.user_type || 'Photography Enthusiast',
-      likes: post.likes_count || 0,
-      commentCount: post.comments_count || 0,
-      isFeatured: post.is_featured || false
-    };
-
-    res.json({
-      success: true,
-      post: formattedPost
-    });
-
-  } catch (error) {
-    console.error('Get single post error:', error);
-    res.status(500).json({ error: 'Server error fetching post' });
   }
 });
 
