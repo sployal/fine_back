@@ -53,9 +53,10 @@ const MPESA_CONFIG = {
   callback_url: process.env.MPESA_CALLBACK_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/callback',
   confirmation_url: process.env.MPESA_CONFIRMATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/confirmation',
   validation_url: process.env.MPESA_VALIDATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/validation',
+  // M-Pesa API base URL for token generation and API calls
   base_url: process.env.NODE_ENV === 'production' 
     ? 'https://api.safaricom.co.ke' 
-    : 'https://sandbox.safaricom.co.ke'
+    : 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials'
 };
 
 // Get M-Pesa access token
