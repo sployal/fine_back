@@ -54,7 +54,7 @@ const MPESA_CONFIG = {
   confirmation_url: process.env.MPESA_CONFIRMATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/confirmation',
   validation_url: process.env.MPESA_VALIDATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/validation',
   // M-Pesa API base URL for token generation and API calls
-  base_url: process.env.NODE_ENV === 'production' 
+  base_url: process.env.NODE_ENV === 'sandbox' 
     ? 'https://api.safaricom.co.ke' 
     : 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials'
 };
