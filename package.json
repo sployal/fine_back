@@ -14,11 +14,17 @@
     "node": ">=16.0.0",
     "npm": ">=8.0.0"
   },
-  "keywords": ["photography", "api", "express", "supabase"],
+  "keywords": [
+    "photography",
+    "api",
+    "express",
+    "supabase"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@supabase/supabase-js": "^2.57.2",
+    "axios": "^1.12.1",
     "bcryptjs": "^3.0.2",
     "cloudinary": "^1.41.3",
     "compression": "^1.8.1",

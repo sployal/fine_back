@@ -18,15 +18,41 @@ const supabase = createClient(
   }
 );
 
+// Authentication middleware
+const authenticateUser = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid authorization header' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    // Verify token with Supabase
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      console.log('Authentication error:', error?.message);
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    console.error('Auth middleware error:', error);
+    res.status(401).json({ error: 'Authentication failed' });
+  }
+};
+
 // M-Pesa Configuration
 const MPESA_CONFIG = {
   consumer_key: 'RKNVKZX9aQ1pkfAAA0gM0fadRoJH5ocEjNK0sQmyYB7qln6o',
   consumer_secret: 'GcwX5AEGwJCvAYq2qDxr99Qh4lfiy6GhDKsoDuefRGLyhZotb7o1ckp0CZ548XBk',
-  business_short_code: process.env.MPESA_BUSINESS_SHORT_CODE || '174379', // Use your actual business shortcode
-  passkey: process.env.MPESA_PASSKEY || 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919', // Use your actual passkey
-  callback_url: process.env.MPESA_CALLBACK_URL || 'https://your-app.com/api/payments/mpesa/callback',
-  confirmation_url: process.env.MPESA_CONFIRMATION_URL || 'https://your-app.com/api/payments/mpesa/confirmation',
-  validation_url: process.env.MPESA_VALIDATION_URL || 'https://your-app.com/api/payments/mpesa/validation',
+  business_short_code: process.env.MPESA_BUSINESS_SHORT_CODE || '174379',
+  passkey: process.env.MPESA_PASSKEY || 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919',
+  callback_url: process.env.MPESA_CALLBACK_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/callback',
+  confirmation_url: process.env.MPESA_CONFIRMATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/confirmation',
+  validation_url: process.env.MPESA_VALIDATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/validation',
   base_url: process.env.NODE_ENV === 'production' 
     ? 'https://api.safaricom.co.ke' 
     : 'https://sandbox.safaricom.co.ke'
@@ -65,8 +91,10 @@ function generateMpesaPassword() {
   return { password, timestamp };
 }
 
+// CORE M-PESA ENDPOINTS
+
 // Initiate STK Push
-router.post('/stk-push', async (req, res) => {
+router.post('/mpesa/stk-push', async (req, res) => {
   try {
     const { 
       phone_number, 
@@ -194,7 +222,7 @@ router.post('/stk-push', async (req, res) => {
 });
 
 // M-Pesa Callback
-router.post('/callback', async (req, res) => {
+router.post('/mpesa/callback', async (req, res) => {
   try {
     console.log('M-Pesa Callback received:', JSON.stringify(req.body, null, 2));
 
@@ -268,6 +296,351 @@ router.post('/callback', async (req, res) => {
   }
 });
 
+// Query transaction status
+router.get('/mpesa/transaction/:transactionId', async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+
+    const { data: transaction, error } = await supabase
+      .from('mpesa_transactions')
+      .select('*')
+      .eq('transaction_id', transactionId)
+      .single();
+
+    if (error || !transaction) {
+      return res.status(404).json({
+        success: false,
+        error: 'Transaction not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      transaction: {
+        transaction_id: transaction.transaction_id,
+        status: transaction.status,
+        amount: transaction.amount,
+        phone_number: transaction.phone_number,
+        mpesa_receipt_number: transaction.mpesa_receipt_number,
+        created_at: transaction.created_at,
+        completed_at: transaction.completed_at,
+        error_message: transaction.error_message
+      }
+    });
+
+  } catch (error) {
+    console.error('Transaction query error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to query transaction'
+    });
+  }
+});
+
+// Validation endpoint (required by Safaricom)
+router.post('/mpesa/validation', (req, res) => {
+  console.log('M-Pesa Validation:', req.body);
+  res.json({
+    ResultCode: 0,
+    ResultDesc: 'Success'
+  });
+});
+
+// Confirmation endpoint (required by Safaricom)
+router.post('/mpesa/confirmation', (req, res) => {
+  console.log('M-Pesa Confirmation:', req.body);
+  res.json({
+    ResultCode: 0,
+    ResultDesc: 'Success'
+  });
+});
+
+// TRANSACTION MANAGEMENT ENDPOINTS
+
+// Update photo payment status
+router.post('/photos/update-payment-status', authenticateUser, async (req, res) => {
+  try {
+    const { photoIds, userId, paymentStatus } = req.body;
+
+    if (!photoIds || !Array.isArray(photoIds) || photoIds.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'photoIds array is required' 
+      });
+    }
+
+    if (!userId || !paymentStatus) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'userId and paymentStatus are required' 
+      });
+    }
+
+    // Ensure user can only update their own photos
+    if (userId !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Cannot update payment status for another user' 
+      });
+    }
+
+    console.log(`🔄 Updating payment status for user ${userId}, photos: ${photoIds.join(', ')}`);
+
+    if (paymentStatus === 'paid') {
+      // Get the current photos record
+      const { data: photosRecord, error: fetchError } = await supabase
+        .from('photos')
+        .select('unpaid_images, paid_images')
+        .eq('recipient_id', userId)
+        .single();
+
+      if (fetchError) {
+        console.error('Error fetching photos record:', fetchError);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Failed to fetch photos record' 
+        });
+      }
+
+      if (!photosRecord) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Photos record not found' 
+        });
+      }
+
+      const unpaidImages = photosRecord.unpaid_images || [];
+      const paidImages = photosRecord.paid_images || [];
+
+      // Move specified photos from unpaid to paid
+      const updatedUnpaidImages = unpaidImages.filter(img => !photoIds.includes(img.id));
+      const photosToMove = unpaidImages.filter(img => photoIds.includes(img.id));
+      
+      if (photosToMove.length === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'No matching unpaid photos found' 
+        });
+      }
+
+      const updatedPaidImages = [...paidImages, ...photosToMove];
+
+      // Update the photos record
+      const { error: updateError } = await supabase
+        .from('photos')
+        .update({
+          unpaid_images: updatedUnpaidImages,
+          paid_images: updatedPaidImages
+        })
+        .eq('recipient_id', userId);
+
+      if (updateError) {
+        console.error('Error updating photos record:', updateError);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Failed to update photos record' 
+        });
+      }
+
+      console.log(`✅ Successfully moved ${photosToMove.length} photos to paid status for user ${userId}`);
+
+      res.json({
+        success: true,
+        message: `Successfully updated payment status for ${photosToMove.length} photos`,
+        movedPhotos: photosToMove.length,
+        updatedUnpaidCount: updatedUnpaidImages.length,
+        updatedPaidCount: updatedPaidImages.length
+      });
+
+    } else {
+      res.status(400).json({ 
+        success: false, 
+        message: 'Invalid payment status. Only "paid" status updates are supported.' 
+      });
+    }
+
+  } catch (error) {
+    console.error('Update payment status error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error updating payment status' 
+    });
+  }
+});
+
+// Get payment transactions for a user
+router.get('/transactions', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { page = 1, limit = 20, status } = req.query;
+    const offset = (page - 1) * limit;
+
+    console.log(`📋 Fetching payment transactions for user: ${userId}`);
+
+    let query = supabase
+      .from('mpesa_transactions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    // Filter by status if provided
+    if (status && ['initiated', 'pending', 'completed', 'failed', 'cancelled', 'timeout'].includes(status)) {
+      query = query.eq('status', status);
+    }
+
+    const { data: transactions, error, count } = await query
+      .range(offset, offset + parseInt(limit) - 1);
+
+    if (error) {
+      console.error('Error fetching payment transactions:', error);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to fetch payment transactions' 
+      });
+    }
+
+    res.json({
+      success: true,
+      transactions: transactions || [],
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count || 0,
+        hasMore: (offset + parseInt(limit)) < (count || 0)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get payment transactions error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error fetching payment transactions' 
+    });
+  }
+});
+
+// Get payment transaction summary for a user
+router.get('/summary', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    console.log(`📊 Fetching payment summary for user: ${userId}`);
+
+    // Calculate summary from mpesa_transactions table
+    const { data: transactions, error } = await supabase
+      .from('mpesa_transactions')
+      .select('status, amount, created_at')
+      .eq('user_id', userId);
+
+    if (error) {
+      console.error('Error fetching transactions for summary:', error);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to fetch payment summary' 
+      });
+    }
+
+    const summary = {
+      user_id: userId,
+      total_transactions: transactions.length,
+      completed_transactions: transactions.filter(t => t.status === 'completed').length,
+      pending_transactions: transactions.filter(t => t.status === 'pending').length,
+      failed_transactions: transactions.filter(t => t.status === 'failed').length,
+      total_amount_paid: transactions
+        .filter(t => t.status === 'completed')
+        .reduce((sum, t) => sum + (t.amount || 0), 0),
+      average_transaction_amount: 0,
+      last_transaction_date: transactions.length > 0 ? 
+        Math.max(...transactions.map(t => new Date(t.created_at).getTime())) : null
+    };
+
+    if (summary.completed_transactions > 0) {
+      summary.average_transaction_amount = summary.total_amount_paid / summary.completed_transactions;
+    }
+
+    if (summary.last_transaction_date) {
+      summary.last_transaction_date = new Date(summary.last_transaction_date).toISOString();
+    }
+
+    res.json({
+      success: true,
+      summary: summary
+    });
+
+  } catch (error) {
+    console.error('Get payment summary error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error fetching payment summary' 
+    });
+  }
+});
+
+// Cleanup expired transactions endpoint
+router.post('/cleanup-expired', authenticateUser, async (req, res) => {
+  try {
+    console.log('🧹 Cleaning up expired payment transactions...');
+
+    // Delete transactions older than 24 hours that are still pending or initiated
+    const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    
+    const { data: expiredTransactions, error: fetchError } = await supabase
+      .from('mpesa_transactions')
+      .select('transaction_id')
+      .in('status', ['pending', 'initiated'])
+      .lt('created_at', cutoffTime);
+
+    if (fetchError) {
+      console.error('Error fetching expired transactions:', fetchError);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to fetch expired transactions' 
+      });
+    }
+
+    if (!expiredTransactions || expiredTransactions.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No expired transactions found',
+        deletedCount: 0
+      });
+    }
+
+    // Update expired transactions to 'timeout' status
+    const { error: updateError } = await supabase
+      .from('mpesa_transactions')
+      .update({ status: 'timeout', error_message: 'Transaction expired' })
+      .in('status', ['pending', 'initiated'])
+      .lt('created_at', cutoffTime);
+
+    if (updateError) {
+      console.error('Error updating expired transactions:', updateError);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to update expired transactions' 
+      });
+    }
+
+    const deletedCount = expiredTransactions.length;
+    console.log(`✅ Updated ${deletedCount} expired transactions to timeout status`);
+
+    res.json({
+      success: true,
+      message: `Successfully updated ${deletedCount} expired transactions`,
+      deletedCount
+    });
+
+  } catch (error) {
+    console.error('Cleanup expired transactions error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error cleaning up expired transactions' 
+    });
+  }
+});
+
+// HELPER FUNCTIONS
+
 // Process photo payment after successful M-Pesa transaction
 async function processPhotoPayment(transaction) {
   try {
@@ -325,63 +698,52 @@ async function processPhotoPayment(transaction) {
   }
 }
 
-// Query transaction status
-router.get('/transaction/:transactionId', async (req, res) => {
+// Periodic cleanup (runs every hour)
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
+
+const cleanupInterval = setInterval(async () => {
   try {
-    const { transactionId } = req.params;
-
-    const { data: transaction, error } = await supabase
+    console.log('🕐 Running scheduled cleanup of expired payment transactions...');
+    
+    const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    
+    const { data: expiredTransactions, error: fetchError } = await supabase
       .from('mpesa_transactions')
-      .select('*')
-      .eq('transaction_id', transactionId)
-      .single();
+      .select('transaction_id')
+      .in('status', ['pending', 'initiated'])
+      .lt('created_at', cutoffTime);
 
-    if (error || !transaction) {
-      return res.status(404).json({
-        success: false,
-        error: 'Transaction not found'
-      });
+    if (fetchError) {
+      console.error('Scheduled cleanup fetch error:', fetchError);
+      return;
     }
 
-    res.json({
-      success: true,
-      transaction: {
-        transaction_id: transaction.transaction_id,
-        status: transaction.status,
-        amount: transaction.amount,
-        phone_number: transaction.phone_number,
-        mpesa_receipt_number: transaction.mpesa_receipt_number,
-        created_at: transaction.created_at,
-        completed_at: transaction.completed_at,
-        error_message: transaction.error_message
+    if (expiredTransactions && expiredTransactions.length > 0) {
+      const { error: updateError } = await supabase
+        .from('mpesa_transactions')
+        .update({ status: 'timeout', error_message: 'Transaction expired' })
+        .in('status', ['pending', 'initiated'])
+        .lt('created_at', cutoffTime);
+
+      if (updateError) {
+        console.error('Scheduled cleanup update error:', updateError);
+      } else {
+        console.log(`✅ Scheduled cleanup updated ${expiredTransactions.length} expired transactions`);
       }
-    });
-
+    }
   } catch (error) {
-    console.error('Transaction query error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to query transaction'
-    });
+    console.error('Scheduled cleanup error:', error);
   }
-});
+}, CLEANUP_INTERVAL);
 
-// Validation endpoint (required by Safaricom)
-router.post('/validation', (req, res) => {
-  console.log('M-Pesa Validation:', req.body);
-  res.json({
-    ResultCode: 0,
-    ResultDesc: 'Success'
-  });
-});
+console.log(`⏰ Scheduled payment transaction cleanup every ${CLEANUP_INTERVAL / 1000 / 60} minutes`);
 
-// Confirmation endpoint (required by Safaricom)
-router.post('/confirmation', (req, res) => {
-  console.log('M-Pesa Confirmation:', req.body);
-  res.json({
-    ResultCode: 0,
-    ResultDesc: 'Success'
-  });
+// Cleanup interval on module unload
+process.on('SIGTERM', () => {
+  clearInterval(cleanupInterval);
+});
+process.on('SIGINT', () => {
+  clearInterval(cleanupInterval);
 });
 
 module.exports = router;

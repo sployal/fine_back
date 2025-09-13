@@ -163,6 +163,36 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Debug endpoint to check loaded routes
+app.get('/api/debug/routes', (req, res) => {
+  const routes = [];
+  
+  app._router.stack.forEach(middleware => {
+    if (middleware.route) {
+      routes.push({
+        path: middleware.route.path,
+        methods: Object.keys(middleware.route.methods)
+      });
+    } else if (middleware.name === 'router') {
+      middleware.handle.stack.forEach(handler => {
+        if (handler.route) {
+          const basePath = middleware.regexp.source.replace('\\/?(?=\\/|$)', '').replace(/\\/g, '');
+          routes.push({
+            path: basePath + handler.route.path,
+            methods: Object.keys(handler.route.methods)
+          });
+        }
+      });
+    }
+  });
+
+  res.json({
+    success: true,
+    routes: routes.filter(route => route.path.includes('mpesa')),
+    allRoutes: routes
+  });
+});
+
 // Try to import image routes with error handling
 try {
   const imageRoutes = require('./imagesend/image');
@@ -173,10 +203,10 @@ try {
   console.log('📝 Image sending functionality will be disabled');
 }
 
-// Import the M-Pesa payment routes
+// Import the M-Pesa payment routes (now contains all payment functionality)
 try {
   const mpesaRoutes = require('./payment/mpesa');
-  app.use('/api/payments/mpesa', mpesaRoutes);
+  app.use('/api/payments', mpesaRoutes);
   console.log('✅ M-Pesa payment routes loaded successfully');
 } catch (error) {
   console.error('⚠️ Failed to load M-Pesa payment routes:', error.message);
@@ -804,254 +834,6 @@ app.post('/api/posts/:postId/like', authenticateUser, async (req, res) => {
   }
 });
 
-// Add photo payment status update endpoint
-app.post('/api/photos/update-payment-status', authenticateUser, async (req, res) => {
-  try {
-    const { photoIds, userId, paymentStatus } = req.body;
-
-    if (!photoIds || !Array.isArray(photoIds) || photoIds.length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'photoIds array is required' 
-      });
-    }
-
-    if (!userId || !paymentStatus) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'userId and paymentStatus are required' 
-      });
-    }
-
-    // Ensure user can only update their own photos
-    if (userId !== req.user.id) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Cannot update payment status for another user' 
-      });
-    }
-
-    console.log(`🔄 Updating payment status for user ${userId}, photos: ${photoIds.join(', ')}`);
-
-    if (paymentStatus === 'paid') {
-      // Get the current photos record
-      const { data: photosRecord, error: fetchError } = await supabase
-        .from('photos')
-        .select('unpaid_images, paid_images')
-        .eq('recipient_id', userId)
-        .single();
-
-      if (fetchError) {
-        console.error('Error fetching photos record:', fetchError);
-        return res.status(500).json({ 
-          success: false, 
-          message: 'Failed to fetch photos record' 
-        });
-      }
-
-      if (!photosRecord) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'Photos record not found' 
-        });
-      }
-
-      const unpaidImages = photosRecord.unpaid_images || [];
-      const paidImages = photosRecord.paid_images || [];
-
-      // Move specified photos from unpaid to paid
-      const updatedUnpaidImages = unpaidImages.filter(img => !photoIds.includes(img.id));
-      const photosToMove = unpaidImages.filter(img => photoIds.includes(img.id));
-      
-      if (photosToMove.length === 0) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'No matching unpaid photos found' 
-        });
-      }
-
-      const updatedPaidImages = [...paidImages, ...photosToMove];
-
-      // Update the photos record
-      const { error: updateError } = await supabase
-        .from('photos')
-        .update({
-          unpaid_images: updatedUnpaidImages,
-          paid_images: updatedPaidImages
-        })
-        .eq('recipient_id', userId);
-
-      if (updateError) {
-        console.error('Error updating photos record:', updateError);
-        return res.status(500).json({ 
-          success: false, 
-          message: 'Failed to update photos record' 
-        });
-      }
-
-      console.log(`✅ Successfully moved ${photosToMove.length} photos to paid status for user ${userId}`);
-
-      res.json({
-        success: true,
-        message: `Successfully updated payment status for ${photosToMove.length} photos`,
-        movedPhotos: photosToMove.length,
-        updatedUnpaidCount: updatedUnpaidImages.length,
-        updatedPaidCount: updatedPaidImages.length
-      });
-
-    } else {
-      res.status(400).json({ 
-        success: false, 
-        message: 'Invalid payment status. Only "paid" status updates are supported.' 
-      });
-    }
-
-  } catch (error) {
-    console.error('Update payment status error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error updating payment status' 
-    });
-  }
-});
-
-// Get payment transactions for a user
-app.get('/api/payments/transactions', authenticateUser, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { page = 1, limit = 20, status } = req.query;
-    const offset = (page - 1) * limit;
-
-    console.log(`📋 Fetching payment transactions for user: ${userId}`);
-
-    let query = supabase
-      .from('payment_transactions')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    // Filter by status if provided
-    if (status && ['pending', 'completed', 'failed', 'cancelled', 'timeout'].includes(status)) {
-      query = query.eq('status', status);
-    }
-
-    const { data: transactions, error, count } = await query
-      .range(offset, offset + parseInt(limit) - 1);
-
-    if (error) {
-      console.error('Error fetching payment transactions:', error);
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Failed to fetch payment transactions' 
-      });
-    }
-
-    res.json({
-      success: true,
-      transactions: transactions || [],
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: count || 0,
-        hasMore: (offset + parseInt(limit)) < (count || 0)
-      }
-    });
-
-  } catch (error) {
-    console.error('Get payment transactions error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error fetching payment transactions' 
-    });
-  }
-});
-
-// Get payment transaction summary for a user
-app.get('/api/payments/summary', authenticateUser, async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    console.log(`📊 Fetching payment summary for user: ${userId}`);
-
-    const { data: summary, error } = await supabase
-      .from('payment_transaction_summary')
-      .select('*')
-      .eq('user_id', userId)
-      .single();
-
-    if (error && error.code !== 'PGRST116') { // PGRST116 is "not found"
-      console.error('Error fetching payment summary:', error);
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Failed to fetch payment summary' 
-      });
-    }
-
-    // Return default summary if no transactions found
-    const defaultSummary = {
-      user_id: userId,
-      total_transactions: 0,
-      completed_transactions: 0,
-      pending_transactions: 0,
-      failed_transactions: 0,
-      total_amount_paid: 0,
-      average_transaction_amount: 0,
-      last_transaction_date: null
-    };
-
-    res.json({
-      success: true,
-      summary: summary || defaultSummary
-    });
-
-  } catch (error) {
-    console.error('Get payment summary error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error fetching payment summary' 
-    });
-  }
-});
-
-// Cleanup expired transactions endpoint (admin only)
-app.post('/api/payments/cleanup-expired', authenticateUser, async (req, res) => {
-  try {
-    // Add admin check here if needed
-    // const isAdmin = await checkAdminStatus(req.user.id);
-    // if (!isAdmin) {
-    //   return res.status(403).json({ success: false, message: 'Admin access required' });
-    // }
-
-    console.log('🧹 Cleaning up expired payment transactions...');
-
-    const { data, error } = await supabase.rpc('cleanup_expired_payment_transactions');
-
-    if (error) {
-      console.error('Error cleaning up expired transactions:', error);
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Failed to cleanup expired transactions' 
-      });
-    }
-
-    const deletedCount = data || 0;
-    console.log(`✅ Cleaned up ${deletedCount} expired transactions`);
-
-    res.json({
-      success: true,
-      message: `Successfully cleaned up ${deletedCount} expired transactions`,
-      deletedCount
-    });
-
-  } catch (error) {
-    console.error('Cleanup expired transactions error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error cleaning up expired transactions' 
-    });
-  }
-});
-
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
@@ -1070,30 +852,6 @@ app.use((error, req, res, next) => {
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
-
-// Add periodic cleanup (runs every hour)
-const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
-
-setInterval(async () => {
-  try {
-    console.log('🕐 Running scheduled cleanup of expired payment transactions...');
-    
-    const { data, error } = await supabase.rpc('cleanup_expired_payment_transactions');
-    
-    if (error) {
-      console.error('Scheduled cleanup error:', error);
-    } else {
-      const deletedCount = data || 0;
-      if (deletedCount > 0) {
-        console.log(`✅ Scheduled cleanup removed ${deletedCount} expired transactions`);
-      }
-    }
-  } catch (error) {
-    console.error('Scheduled cleanup error:', error);
-  }
-}, CLEANUP_INTERVAL);
-
-console.log(`⏰ Scheduled payment transaction cleanup every ${CLEANUP_INTERVAL / 1000 / 60} minutes`);
 
 // Start server
 app.listen(PORT, () => {
