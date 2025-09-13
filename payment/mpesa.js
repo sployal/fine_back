@@ -47,9 +47,9 @@ const authenticateUser = async (req, res, next) => {
 // SANDBOX ONLY M-Pesa Configuration
 const MPESA_CONFIG = {
   // SANDBOX credentials - these are safe to use for testing
-  consumer_key: 'ZWRhbEtGMmFOaW5PUUo0Q0NYMjIxR0M1M20zUFVmUGQ6QXJ6eXFqYTQzQjFxYXgxUg==', // Standard sandbox key
-  consumer_secret: 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919', // Standard sandbox secret
-  business_short_code: '174379', // Standard test shortcode
+  consumer_key: 'RKNVKZX9aQ1pkfAAA0gM0fadRoJH5ocEjNK0sQmyYB7qln6o', // Standard sandbox key
+  consumer_secret: 'GcwX5AEGwJCvAYq2qDxr99Qh4lfiy6GhDKsoDuefRGLyhZotb7o1ckp0CZ548XBk', // Standard sandbox secret
+  business_short_code: 'N/A', // Standard test shortcode
   passkey: 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919', // Standard test passkey
   
   // Callback URLs
