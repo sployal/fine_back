@@ -52,9 +52,6 @@ const MPESA_CONFIG = {
   business_short_code: '174379', // Standard test shortcode
   passkey: 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919', // Standard test passkey
   
-  // App branding
-  app_name: 'Finetake',
-  
   // Callback URLs
   callback_url: process.env.MPESA_CALLBACK_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/callback',
   confirmation_url: process.env.MPESA_CONFIRMATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/confirmation',
@@ -69,7 +66,6 @@ console.log('🧪 M-Pesa SANDBOX Mode Initialized');
 console.log('OAuth URL:', MPESA_CONFIG.oauth_url);
 console.log('API URL:', MPESA_CONFIG.api_url);
 console.log('Business Short Code:', MPESA_CONFIG.business_short_code);
-console.log('App Name:', MPESA_CONFIG.app_name);
 
 // Get M-Pesa access token - SANDBOX ONLY
 async function getMpesaAccessToken() {
@@ -210,14 +206,10 @@ router.post('/mpesa/stk-push', async (req, res) => {
     // Generate password and timestamp
     const { password, timestamp } = generateMpesaPassword();
 
-    // Create custom transaction reference
-    const customTransactionRef = account_reference || generateTransactionReference(photo_ids.length);
-    
-    // Create internal transaction ID
+    // Create transaction record
     const transactionId = `SANDBOX_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     console.log('💾 Creating transaction record:', transactionId);
-    console.log('📝 Custom reference:', customTransactionRef);
     
     const { error: dbError } = await supabase
       .from('mpesa_transactions')
@@ -227,7 +219,6 @@ router.post('/mpesa/stk-push', async (req, res) => {
         phone_number: cleanPhone,
         amount: numAmount,
         photo_ids: photo_ids,
-        account_reference: customTransactionRef,
         status: 'initiated',
         created_at: new Date().toISOString()
       }]);
@@ -241,7 +232,11 @@ router.post('/mpesa/stk-push', async (req, res) => {
       });
     }
 
-    // Prepare STK Push data for SANDBOX with custom branding
+    // Generate custom account reference and transaction description
+    const customAccountReference = `Finetake 6717091`; // Fixed account reference number
+    const customTransactionDesc = `Photo purchase = ${photo_ids.length}`;
+
+    // Prepare STK Push data for SANDBOX
     const stkPushData = {
       BusinessShortCode: 174379,  // Fixed sandbox shortcode
       Password: password,
@@ -252,8 +247,8 @@ router.post('/mpesa/stk-push', async (req, res) => {
       PartyB: 174379,  // Same as business shortcode
       PhoneNumber: parseInt(cleanPhone),
       CallBackURL: MPESA_CONFIG.callback_url,
-      AccountReference: customTransactionRef, // This shows up in the STK popup
-      TransactionDesc: transaction_desc || `${MPESA_CONFIG.app_name} - Photo Purchase (${photo_ids.length} photo${photo_ids.length > 1 ? 's' : ''})`
+      AccountReference: customAccountReference, // Now shows "Finetake 6717091"
+      TransactionDesc: customTransactionDesc // Now shows "Photo purchase = 3"
     };
 
     console.log('🚀 Sending SANDBOX STK Push...');
@@ -261,7 +256,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
       ...stkPushData,
       Password: '***HIDDEN***',
       PhoneNumber: '***HIDDEN***',
-      AccountReference: customTransactionRef,
+      AccountReference: stkPushData.AccountReference,
       TransactionDesc: stkPushData.TransactionDesc
     });
 
@@ -285,25 +280,30 @@ router.post('/mpesa/stk-push', async (req, res) => {
     });
 
     if (stkResponse.data.ResponseCode === '0') {
-      // Success - update transaction
+      // Success - update transaction with custom reference
       await supabase
         .from('mpesa_transactions')
         .update({
           checkout_request_id: stkResponse.data.CheckoutRequestID,
           merchant_request_id: stkResponse.data.MerchantRequestID,
+          account_reference: customAccountReference,
+          transaction_desc: customTransactionDesc,
           status: 'pending'
         })
         .eq('transaction_id', transactionId);
 
       console.log('✅ SANDBOX STK Push successful!');
+      console.log('Account Reference:', customAccountReference);
+      console.log('Transaction Description:', customTransactionDesc);
 
       res.json({
         success: true,
         message: 'STK Push sent successfully to your phone',
         transaction_id: transactionId,
-        account_reference: customTransactionRef,
         checkout_request_id: stkResponse.data.CheckoutRequestID,
-        customer_message: stkResponse.data.CustomerMessage || `Check your phone for ${MPESA_CONFIG.app_name} payment prompt`
+        account_reference: customAccountReference,
+        transaction_description: customTransactionDesc,
+        customer_message: stkResponse.data.CustomerMessage || 'Check your phone for M-Pesa prompt'
       });
     } else {
       // Failed - update transaction
@@ -455,11 +455,12 @@ router.get('/mpesa/transaction/:transactionId', async (req, res) => {
       success: true,
       transaction: {
         transaction_id: transaction.transaction_id,
-        account_reference: transaction.account_reference,
         status: transaction.status,
         amount: transaction.amount,
         phone_number: transaction.phone_number,
         mpesa_receipt_number: transaction.mpesa_receipt_number,
+        account_reference: transaction.account_reference,
+        transaction_desc: transaction.transaction_desc,
         created_at: transaction.created_at,
         completed_at: transaction.completed_at,
         error_message: transaction.error_message
@@ -482,12 +483,10 @@ router.get('/test-config', async (req, res) => {
     
     const testResults = {
       mode: 'SANDBOX',
-      app_name: MPESA_CONFIG.app_name,
       oauth_url: MPESA_CONFIG.oauth_url,
       api_url: MPESA_CONFIG.api_url,
       business_short_code: MPESA_CONFIG.business_short_code,
-      callback_url: MPESA_CONFIG.callback_url,
-      sample_transaction_reference: generateTransactionReference(3)
+      callback_url: MPESA_CONFIG.callback_url
     };
     
     // Test token generation
@@ -579,7 +578,7 @@ async function processPhotoPayment(transaction) {
     if (updateError) {
       console.error('Error updating photos:', updateError);
     } else {
-      console.log(`✅ Moved ${imagesToMove.length} images to paid status for ${MPESA_CONFIG.app_name}`);
+      console.log(`✅ Moved ${imagesToMove.length} images to paid status`);
     }
 
   } catch (error) {
