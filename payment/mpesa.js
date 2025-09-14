@@ -232,6 +232,10 @@ router.post('/mpesa/stk-push', async (req, res) => {
       });
     }
 
+    // Generate custom account reference and transaction description
+    const customAccountReference = `Finetake 6717091`; // Fixed account reference number
+    const customTransactionDesc = `Photo purchase = ${photo_ids.length}`;
+
     // Prepare STK Push data for SANDBOX
     const stkPushData = {
       BusinessShortCode: 174379,  // Fixed sandbox shortcode
@@ -243,15 +247,17 @@ router.post('/mpesa/stk-push', async (req, res) => {
       PartyB: 174379,  // Same as business shortcode
       PhoneNumber: parseInt(cleanPhone),
       CallBackURL: MPESA_CONFIG.callback_url,
-      AccountReference: account_reference || transactionId,
-      TransactionDesc: transaction_desc || `Photo Purchase - ${photo_ids.length} photo(s)`
+      AccountReference: customAccountReference, // Now shows "Finetake 6717091"
+      TransactionDesc: customTransactionDesc // Now shows "Photo purchase = 3"
     };
 
     console.log('🚀 Sending SANDBOX STK Push...');
     console.log('Request data:', {
       ...stkPushData,
       Password: '***HIDDEN***',
-      PhoneNumber: '***HIDDEN***'
+      PhoneNumber: '***HIDDEN***',
+      AccountReference: stkPushData.AccountReference,
+      TransactionDesc: stkPushData.TransactionDesc
     });
 
     // Send STK Push to SANDBOX
@@ -274,23 +280,29 @@ router.post('/mpesa/stk-push', async (req, res) => {
     });
 
     if (stkResponse.data.ResponseCode === '0') {
-      // Success - update transaction
+      // Success - update transaction with custom reference
       await supabase
         .from('mpesa_transactions')
         .update({
           checkout_request_id: stkResponse.data.CheckoutRequestID,
           merchant_request_id: stkResponse.data.MerchantRequestID,
+          account_reference: customAccountReference,
+          transaction_desc: customTransactionDesc,
           status: 'pending'
         })
         .eq('transaction_id', transactionId);
 
       console.log('✅ SANDBOX STK Push successful!');
+      console.log('Account Reference:', customAccountReference);
+      console.log('Transaction Description:', customTransactionDesc);
 
       res.json({
         success: true,
         message: 'STK Push sent successfully to your phone',
         transaction_id: transactionId,
         checkout_request_id: stkResponse.data.CheckoutRequestID,
+        account_reference: customAccountReference,
+        transaction_description: customTransactionDesc,
         customer_message: stkResponse.data.CustomerMessage || 'Check your phone for M-Pesa prompt'
       });
     } else {
@@ -447,6 +459,8 @@ router.get('/mpesa/transaction/:transactionId', async (req, res) => {
         amount: transaction.amount,
         phone_number: transaction.phone_number,
         mpesa_receipt_number: transaction.mpesa_receipt_number,
+        account_reference: transaction.account_reference,
+        transaction_desc: transaction.transaction_desc,
         created_at: transaction.created_at,
         completed_at: transaction.completed_at,
         error_message: transaction.error_message
@@ -512,7 +526,136 @@ router.get('/test-config', async (req, res) => {
   }
 });
 
-// Process photo payment helper
+// Add endpoint to manually cancel pending transactions
+router.post('/mpesa/cancel/:transactionId', async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+
+    // Find the transaction
+    const { data: transaction, error } = await supabase
+      .from('mpesa_transactions')
+      .select('*')
+      .eq('transaction_id', transactionId)
+      .single();
+
+    if (error || !transaction) {
+      return res.status(404).json({
+        success: false,
+        error: 'Transaction not found'
+      });
+    }
+
+    // Only allow cancellation of pending transactions
+    if (transaction.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot cancel transaction with status: ${transaction.status}`
+      });
+    }
+
+    // Update transaction to cancelled
+    const { error: updateError } = await supabase
+      .from('mpesa_transactions')
+      .update({
+        status: 'cancelled',
+        error_message: 'Transaction cancelled by user',
+        user_friendly_error: 'Payment was cancelled',
+        completed_at: new Date().toISOString()
+      })
+      .eq('transaction_id', transactionId);
+
+    if (updateError) {
+      console.error('Error cancelling transaction:', updateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to cancel transaction'
+      });
+    }
+
+    console.log(`🚫 Transaction ${transactionId} cancelled by user`);
+
+    res.json({
+      success: true,
+      message: 'Transaction cancelled successfully',
+      transaction_id: transactionId,
+      status: 'cancelled'
+    });
+
+  } catch (error) {
+    console.error('Cancel transaction error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cancel transaction'
+    });
+  }
+});
+
+// Add endpoint to handle transaction timeouts (can be called by frontend or cron job)
+router.post('/mpesa/cleanup-timeouts', async (req, res) => {
+  try {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+
+    // Find all pending transactions older than 5 minutes
+    const { data: timedOutTransactions, error: fetchError } = await supabase
+      .from('mpesa_transactions')
+      .select('*')
+      .eq('status', 'pending')
+      .lt('created_at', fiveMinutesAgo);
+
+    if (fetchError) {
+      console.error('Error fetching timed out transactions:', fetchError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch timed out transactions'
+      });
+    }
+
+    if (!timedOutTransactions || timedOutTransactions.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No timed out transactions found',
+        cleaned_count: 0
+      });
+    }
+
+    // Update all timed out transactions
+    const transactionIds = timedOutTransactions.map(t => t.transaction_id);
+    
+    const { error: updateError } = await supabase
+      .from('mpesa_transactions')
+      .update({
+        status: 'timeout',
+        error_message: 'Request expired - no user response within 5 minutes',
+        user_friendly_error: 'Payment request expired. Please try again.',
+        completed_at: new Date().toISOString()
+      })
+      .in('transaction_id', transactionIds);
+
+    if (updateError) {
+      console.error('Error updating timed out transactions:', updateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update timed out transactions'
+      });
+    }
+
+    console.log(`⏰ Cleaned up ${timedOutTransactions.length} timed out transactions`);
+
+    res.json({
+      success: true,
+      message: `Successfully cleaned up ${timedOutTransactions.length} timed out transactions`,
+      cleaned_count: timedOutTransactions.length,
+      transaction_ids: transactionIds
+    });
+
+  } catch (error) {
+    console.error('Cleanup timeouts error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cleanup timed out transactions'
+    });
+  }
+});
 async function processPhotoPayment(transaction) {
   try {
     const photoIds = transaction.photo_ids;
