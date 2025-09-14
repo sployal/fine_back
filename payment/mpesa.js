@@ -138,13 +138,6 @@ function generateMpesaPassword() {
   return { password, timestamp };
 }
 
-// Generate custom transaction reference
-function generateTransactionReference(photoCount = 0) {
-  const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp
-  const random = Math.random().toString(36).substr(2, 4).toUpperCase(); // 4 random chars
-  return `${MPESA_CONFIG.app_name}${timestamp}${random}`;
-}
-
 // SANDBOX STK Push
 router.post('/mpesa/stk-push', async (req, res) => {
   try {
