@@ -526,7 +526,136 @@ router.get('/test-config', async (req, res) => {
   }
 });
 
-// Process photo payment helper
+// Add endpoint to manually cancel pending transactions
+router.post('/mpesa/cancel/:transactionId', async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+
+    // Find the transaction
+    const { data: transaction, error } = await supabase
+      .from('mpesa_transactions')
+      .select('*')
+      .eq('transaction_id', transactionId)
+      .single();
+
+    if (error || !transaction) {
+      return res.status(404).json({
+        success: false,
+        error: 'Transaction not found'
+      });
+    }
+
+    // Only allow cancellation of pending transactions
+    if (transaction.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot cancel transaction with status: ${transaction.status}`
+      });
+    }
+
+    // Update transaction to cancelled
+    const { error: updateError } = await supabase
+      .from('mpesa_transactions')
+      .update({
+        status: 'cancelled',
+        error_message: 'Transaction cancelled by user',
+        user_friendly_error: 'Payment was cancelled',
+        completed_at: new Date().toISOString()
+      })
+      .eq('transaction_id', transactionId);
+
+    if (updateError) {
+      console.error('Error cancelling transaction:', updateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to cancel transaction'
+      });
+    }
+
+    console.log(`🚫 Transaction ${transactionId} cancelled by user`);
+
+    res.json({
+      success: true,
+      message: 'Transaction cancelled successfully',
+      transaction_id: transactionId,
+      status: 'cancelled'
+    });
+
+  } catch (error) {
+    console.error('Cancel transaction error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cancel transaction'
+    });
+  }
+});
+
+// Add endpoint to handle transaction timeouts (can be called by frontend or cron job)
+router.post('/mpesa/cleanup-timeouts', async (req, res) => {
+  try {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+
+    // Find all pending transactions older than 5 minutes
+    const { data: timedOutTransactions, error: fetchError } = await supabase
+      .from('mpesa_transactions')
+      .select('*')
+      .eq('status', 'pending')
+      .lt('created_at', fiveMinutesAgo);
+
+    if (fetchError) {
+      console.error('Error fetching timed out transactions:', fetchError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch timed out transactions'
+      });
+    }
+
+    if (!timedOutTransactions || timedOutTransactions.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No timed out transactions found',
+        cleaned_count: 0
+      });
+    }
+
+    // Update all timed out transactions
+    const transactionIds = timedOutTransactions.map(t => t.transaction_id);
+    
+    const { error: updateError } = await supabase
+      .from('mpesa_transactions')
+      .update({
+        status: 'timeout',
+        error_message: 'Request expired - no user response within 5 minutes',
+        user_friendly_error: 'Payment request expired. Please try again.',
+        completed_at: new Date().toISOString()
+      })
+      .in('transaction_id', transactionIds);
+
+    if (updateError) {
+      console.error('Error updating timed out transactions:', updateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update timed out transactions'
+      });
+    }
+
+    console.log(`⏰ Cleaned up ${timedOutTransactions.length} timed out transactions`);
+
+    res.json({
+      success: true,
+      message: `Successfully cleaned up ${timedOutTransactions.length} timed out transactions`,
+      cleaned_count: timedOutTransactions.length,
+      transaction_ids: transactionIds
+    });
+
+  } catch (error) {
+    console.error('Cleanup timeouts error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cleanup timed out transactions'
+    });
+  }
+});
 async function processPhotoPayment(transaction) {
   try {
     const photoIds = transaction.photo_ids;
