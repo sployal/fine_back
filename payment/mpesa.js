@@ -235,7 +235,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
     // Prepare STK Push data for SANDBOX
     const stkPushData = {
       BusinessShortCode: 174379,  // Fixed sandbox shortcode
-      Password: password,
+      Password: MTc0Mzc5YmZiMjc5ZjlhYTliZGJjZjE1OGU5N2RkNzFhNDY3Y2QyZTBjODkzMDU5YjEwZjc4ZTZiNzJhZGExZWQyYzkxOTIwMjUwOTE0MDUzNjE0,
       Timestamp: timestamp,
       TransactionType: 'CustomerPayBillOnline',
       Amount: Math.round(numAmount),
