@@ -150,7 +150,8 @@ router.post('/mpesa/stk-push', async (req, res) => {
       phone: phone_number?.replace(/\d(?=\d{3})/g, '*'),
       amount,
       user_id: user_id?.substring(0, 8) + '...',
-      photos: photo_ids?.length
+      photos: photo_ids?.length,
+      photo_ids: photo_ids // Add this for debugging
     });
 
     // Validate required fields
@@ -535,17 +536,22 @@ async function processPhotoPayment(transaction) {
     const unpaidImages = photoRecord.unpaid_images || [];
     const paidImages = photoRecord.paid_images || [];
 
-    // Move purchased images to paid
-    const imagesToMove = unpaidImages.filter(image => 
-      photoIds.includes(image.id)
-    );
+    // Simple approach: Move images from unpaid to paid based on quantity
+    // Since photoIds contains the count of images being purchased
+    const numberOfImagesToBuy = photoIds.length;
+    
+    if (unpaidImages.length < numberOfImagesToBuy) {
+      console.error('Not enough unpaid images available');
+      return;
+    }
 
-    const remainingUnpaidImages = unpaidImages.filter(image => 
-      !photoIds.includes(image.id)
-    );
+    // Move the first N unpaid images to paid
+    const imagesToMove = unpaidImages.slice(0, numberOfImagesToBuy);
+    const remainingUnpaidImages = unpaidImages.slice(numberOfImagesToBuy);
 
-    const updatedPaidImages = [...paidImages, ...imagesToMove.map(image => ({
-      ...image,
+    // Add to paid images with transaction details
+    const updatedPaidImages = [...paidImages, ...imagesToMove.map(imageUrl => ({
+      image_url: imageUrl,
       paid_at: new Date().toISOString(),
       transaction_id: transaction.transaction_id,
       mpesa_receipt_number: transaction.mpesa_receipt_number
