@@ -150,8 +150,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
       phone: phone_number?.replace(/\d(?=\d{3})/g, '*'),
       amount,
       user_id: user_id?.substring(0, 8) + '...',
-      photos: photo_ids?.length,
-      photo_ids: photo_ids // Add this for debugging
+      photos: photo_ids?.length
     });
 
     // Validate required fields
@@ -513,14 +512,13 @@ router.get('/test-config', async (req, res) => {
   }
 });
 
-// FIXED Process photo payment helper
+// Process photo payment helper
 async function processPhotoPayment(transaction) {
   try {
     const photoIds = transaction.photo_ids;
     const userId = transaction.user_id;
 
     console.log(`🖼️ Processing photo payment for user ${userId}`);
-    console.log('Photo IDs to process:', photoIds);
 
     // Get user's photos
     const { data: photoRecord, error: fetchError } = await supabase
@@ -530,103 +528,28 @@ async function processPhotoPayment(transaction) {
       .single();
 
     if (fetchError || !photoRecord) {
-      console.error('Photo record not found for user:', userId, fetchError);
+      console.error('Photo record not found:', userId, fetchError);
       return;
     }
-
-    console.log('Found photo record:', {
-      id: photoRecord.id,
-      unpaid_count: photoRecord.unpaid_images?.length || 0,
-      paid_count: photoRecord.paid_images?.length || 0
-    });
 
     const unpaidImages = photoRecord.unpaid_images || [];
     const paidImages = photoRecord.paid_images || [];
 
-    console.log('Current unpaid images structure:', unpaidImages.slice(0, 2)); // Log first 2 for debugging
+    // Move purchased images to paid
+    const imagesToMove = unpaidImages.filter(image => 
+      photoIds.includes(image.id)
+    );
 
-    // FIXED: Handle different possible structures of unpaid_images
-    let imagesToMove = [];
-    let remainingUnpaidImages = [];
+    const remainingUnpaidImages = unpaidImages.filter(image => 
+      !photoIds.includes(image.id)
+    );
 
-    // Check if unpaid_images contains objects with id property
-    if (unpaidImages.length > 0 && typeof unpaidImages[0] === 'object' && unpaidImages[0].id) {
-      // Case 1: Array of objects with id property
-      console.log('Processing unpaid_images as array of objects with id');
-      imagesToMove = unpaidImages.filter(image => photoIds.includes(image.id));
-      remainingUnpaidImages = unpaidImages.filter(image => !photoIds.includes(image.id));
-    } 
-    else if (unpaidImages.length > 0 && typeof unpaidImages[0] === 'string') {
-      // Case 2: Array of strings (photo IDs)
-      console.log('Processing unpaid_images as array of strings');
-      imagesToMove = unpaidImages.filter(imageId => photoIds.includes(imageId));
-      remainingUnpaidImages = unpaidImages.filter(imageId => !photoIds.includes(imageId));
-      
-      // Convert string IDs to objects for paid_images
-      imagesToMove = imagesToMove.map(imageId => ({
-        id: imageId,
-        paid_at: new Date().toISOString(),
-        transaction_id: transaction.transaction_id,
-        mpesa_receipt_number: transaction.mpesa_receipt_number
-      }));
-    }
-    else {
-      // Case 3: Try to match by string comparison
-      console.log('Attempting string-based matching');
-      console.log('PhotoIds from transaction:', photoIds);
-      console.log('Unpaid images:', unpaidImages);
-      
-      // Try direct string matching
-      for (const photoId of photoIds) {
-        const foundIndex = unpaidImages.findIndex(image => {
-          if (typeof image === 'string') {
-            return image === photoId;
-          } else if (typeof image === 'object' && image !== null) {
-            return image.id === photoId || image.toString() === photoId;
-          }
-          return false;
-        });
-        
-        if (foundIndex !== -1) {
-          imagesToMove.push(unpaidImages[foundIndex]);
-          unpaidImages.splice(foundIndex, 1);
-        }
-      }
-      remainingUnpaidImages = unpaidImages;
-    }
-
-    console.log(`Found ${imagesToMove.length} images to move to paid status`);
-    console.log('Images to move:', imagesToMove);
-
-    if (imagesToMove.length === 0) {
-      console.error('❌ No matching images found!');
-      console.error('PhotoIds from transaction:', photoIds);
-      console.error('Available unpaid images:', unpaidImages.map(img => 
-        typeof img === 'object' ? img.id : img
-      ));
-      return;
-    }
-
-    // Prepare updated paid images
-    const updatedPaidImages = [...paidImages, ...imagesToMove.map(image => {
-      if (typeof image === 'string') {
-        return {
-          id: image,
-          paid_at: new Date().toISOString(),
-          transaction_id: transaction.transaction_id,
-          mpesa_receipt_number: transaction.mpesa_receipt_number
-        };
-      } else {
-        return {
-          ...image,
-          paid_at: new Date().toISOString(),
-          transaction_id: transaction.transaction_id,
-          mpesa_receipt_number: transaction.mpesa_receipt_number
-        };
-      }
-    })];
-
-    console.log(`Updating photos: moving ${imagesToMove.length} to paid, ${remainingUnpaidImages.length} remaining unpaid`);
+    const updatedPaidImages = [...paidImages, ...imagesToMove.map(image => ({
+      ...image,
+      paid_at: new Date().toISOString(),
+      transaction_id: transaction.transaction_id,
+      mpesa_receipt_number: transaction.mpesa_receipt_number
+    }))];
 
     // Update photos record
     const { error: updateError } = await supabase
@@ -639,17 +562,13 @@ async function processPhotoPayment(transaction) {
       .eq('recipient_id', userId);
 
     if (updateError) {
-      console.error('❌ Error updating photos:', updateError);
+      console.error('Error updating photos:', updateError);
     } else {
-      console.log(`✅ Successfully moved ${imagesToMove.length} images to paid status`);
-      console.log('Updated counts:', {
-        paid: updatedPaidImages.length,
-        unpaid: remainingUnpaidImages.length
-      });
+      console.log(`✅ Moved ${imagesToMove.length} images to paid status`);
     }
 
   } catch (error) {
-    console.error('❌ Photo payment processing error:', error);
+    console.error('Photo payment processing error:', error);
   }
 }
 
