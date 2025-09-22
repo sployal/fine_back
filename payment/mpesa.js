@@ -143,22 +143,22 @@ router.post('/mpesa/stk-push', async (req, res) => {
       transaction_desc, 
       account_reference,
       user_id,
-      photo_ids 
+      photo_urls // CHANGED: Accept photo URLs instead of IDs
     } = req.body;
 
     console.log('📱 SANDBOX STK Push request:', {
       phone: phone_number?.replace(/\d(?=\d{3})/g, '*'),
       amount,
       user_id: user_id?.substring(0, 8) + '...',
-      photos: photo_ids?.length,
-      photo_ids: photo_ids // Add this for debugging
+      photos: photo_urls?.length,
+      photo_urls: photo_urls // For debugging
     });
 
-    // Validate required fields
-    if (!phone_number || !amount || !user_id || !photo_ids) {
+    // Validate required fields - CHANGED: photo_urls instead of photo_ids
+    if (!phone_number || !amount || !user_id || !photo_urls || !Array.isArray(photo_urls)) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: phone_number, amount, user_id, photo_ids'
+        error: 'Missing required fields: phone_number, amount, user_id, photo_urls (array)'
       });
     }
 
@@ -207,7 +207,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
     // Generate password and timestamp
     const { password, timestamp } = generateMpesaPassword();
 
-    // Create transaction record
+    // Create transaction record - CHANGED: Store photo_urls instead of photo_ids
     const transactionId = `SANDBOX_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     console.log('💾 Creating transaction record:', transactionId);
@@ -219,7 +219,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
         user_id: user_id,
         phone_number: cleanPhone,
         amount: numAmount,
-        photo_ids: photo_ids,
+        photo_ids: photo_urls, // Store URLs in photo_ids field for compatibility
         status: 'initiated',
         created_at: new Date().toISOString()
       }]);
@@ -245,7 +245,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
       PhoneNumber: parseInt(cleanPhone),
       CallBackURL: MPESA_CONFIG.callback_url,
       AccountReference: account_reference || transactionId,
-      TransactionDesc: transaction_desc || `Photo Purchase - ${photo_ids.length} photo(s)`
+      TransactionDesc: transaction_desc || `Photo Purchase - ${photo_urls.length} photo(s)`
     };
 
     console.log('🚀 Sending SANDBOX STK Push...');
@@ -513,13 +513,14 @@ router.get('/test-config', async (req, res) => {
   }
 });
 
-// Process photo payment helper
+// FIXED: Process photo payment helper - Now handles specific photo URLs
 async function processPhotoPayment(transaction) {
   try {
-    const photoIds = transaction.photo_ids;
+    const photoUrls = transaction.photo_ids; // Contains photo URLs now
     const userId = transaction.user_id;
 
     console.log(`🖼️ Processing photo payment for user ${userId}`);
+    console.log(`🎯 Moving specific photos:`, photoUrls);
 
     // Get user's photos
     const { data: photoRecord, error: fetchError } = await supabase
@@ -536,26 +537,35 @@ async function processPhotoPayment(transaction) {
     const unpaidImages = photoRecord.unpaid_images || [];
     const paidImages = photoRecord.paid_images || [];
 
-    // Simple approach: Move images from unpaid to paid based on quantity
-    // Since photoIds contains the count of images being purchased
-    const numberOfImagesToBuy = photoIds.length;
-    
-    if (unpaidImages.length < numberOfImagesToBuy) {
-      console.error('Not enough unpaid images available');
-      return;
+    console.log(`📋 Current unpaid images count: ${unpaidImages.length}`);
+    console.log(`📋 Current paid images count: ${paidImages.length}`);
+
+    // FIXED: Find specific photos to move based on URLs
+    const imagesToMove = [];
+    const remainingUnpaidImages = [];
+
+    // Iterate through unpaid images and separate those being purchased
+    for (const imageUrl of unpaidImages) {
+      if (photoUrls.includes(imageUrl)) {
+        // This image was purchased
+        imagesToMove.push(imageUrl);
+      } else {
+        // This image remains unpaid
+        remainingUnpaidImages.push(imageUrl);
+      }
     }
 
-    // Move the first N unpaid images to paid
-    const imagesToMove = unpaidImages.slice(0, numberOfImagesToBuy);
-    const remainingUnpaidImages = unpaidImages.slice(numberOfImagesToBuy);
+    console.log(`✅ Found ${imagesToMove.length} specific images to move`);
+    console.log(`📄 Remaining unpaid: ${remainingUnpaidImages.length}`);
 
-    // Add to paid images with transaction details
-    const updatedPaidImages = [...paidImages, ...imagesToMove.map(imageUrl => ({
-      image_url: imageUrl,
-      paid_at: new Date().toISOString(),
-      transaction_id: transaction.transaction_id,
-      mpesa_receipt_number: transaction.mpesa_receipt_number
-    }))];
+    // Verify we found all requested photos
+    if (imagesToMove.length !== photoUrls.length) {
+      console.warn(`⚠️ Mismatch: Requested ${photoUrls.length} photos, found ${imagesToMove.length}`);
+      console.warn('Missing photos:', photoUrls.filter(url => !imagesToMove.includes(url)));
+    }
+
+    // Add moved images to paid array as simple URLs (matching your current format)
+    const updatedPaidImages = [...paidImages, ...imagesToMove];
 
     // Update photos record
     const { error: updateError } = await supabase
@@ -568,13 +578,14 @@ async function processPhotoPayment(transaction) {
       .eq('recipient_id', userId);
 
     if (updateError) {
-      console.error('Error updating photos:', updateError);
+      console.error('❌ Error updating photos:', updateError);
     } else {
-      console.log(`✅ Moved ${imagesToMove.length} images to paid status`);
+      console.log(`✅ Successfully moved ${imagesToMove.length} specific images to paid status`);
+      console.log(`📊 New counts - Paid: ${updatedPaidImages.length}, Unpaid: ${remainingUnpaidImages.length}`);
     }
 
   } catch (error) {
-    console.error('Photo payment processing error:', error);
+    console.error('❌ Photo payment processing error:', error);
   }
 }
 
