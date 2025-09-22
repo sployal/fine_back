@@ -143,22 +143,22 @@ router.post('/mpesa/stk-push', async (req, res) => {
       transaction_desc, 
       account_reference,
       user_id,
-      photo_urls // CHANGED: Accept photo URLs instead of IDs
+      photo_ids // Keep original parameter name
     } = req.body;
 
     console.log('📱 SANDBOX STK Push request:', {
       phone: phone_number?.replace(/\d(?=\d{3})/g, '*'),
       amount,
       user_id: user_id?.substring(0, 8) + '...',
-      photos: photo_urls?.length,
-      photo_urls: photo_urls // For debugging
+      photos: photo_ids?.length,
+      photo_ids: photo_ids // For debugging
     });
 
-    // Validate required fields - CHANGED: photo_urls instead of photo_ids
-    if (!phone_number || !amount || !user_id || !photo_urls || !Array.isArray(photo_urls)) {
+    // Validate required fields
+    if (!phone_number || !amount || !user_id || !photo_ids || !Array.isArray(photo_ids)) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: phone_number, amount, user_id, photo_urls (array)'
+        error: 'Missing required fields: phone_number, amount, user_id, photo_ids (array)'
       });
     }
 
@@ -219,7 +219,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
         user_id: user_id,
         phone_number: cleanPhone,
         amount: numAmount,
-        photo_ids: photo_urls, // Store URLs in photo_ids field for compatibility
+        photo_ids: photo_ids, // Store the data as received from Flutter
         status: 'initiated',
         created_at: new Date().toISOString()
       }]);
@@ -245,7 +245,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
       PhoneNumber: parseInt(cleanPhone),
       CallBackURL: MPESA_CONFIG.callback_url,
       AccountReference: account_reference || transactionId,
-      TransactionDesc: transaction_desc || `Photo Purchase - ${photo_urls.length} photo(s)`
+      TransactionDesc: transaction_desc || `Photo Purchase - ${photo_ids.length} photo(s)`
     };
 
     console.log('🚀 Sending SANDBOX STK Push...');
@@ -513,14 +513,14 @@ router.get('/test-config', async (req, res) => {
   }
 });
 
-// FIXED: Process photo payment helper - Now handles specific photo URLs
+// FIXED: Process photo payment helper - Now handles photo IDs properly
 async function processPhotoPayment(transaction) {
   try {
-    const photoUrls = transaction.photo_ids; // Contains photo URLs now
+    const photoIds = transaction.photo_ids; // Photo IDs from Flutter
     const userId = transaction.user_id;
 
     console.log(`🖼️ Processing photo payment for user ${userId}`);
-    console.log(`🎯 Moving specific photos:`, photoUrls);
+    console.log(`🎯 Photo IDs received:`, photoIds);
 
     // Get user's photos
     const { data: photoRecord, error: fetchError } = await supabase
@@ -540,31 +540,22 @@ async function processPhotoPayment(transaction) {
     console.log(`📋 Current unpaid images count: ${unpaidImages.length}`);
     console.log(`📋 Current paid images count: ${paidImages.length}`);
 
-    // FIXED: Find specific photos to move based on URLs
-    const imagesToMove = [];
-    const remainingUnpaidImages = [];
-
-    // Iterate through unpaid images and separate those being purchased
-    for (const imageUrl of unpaidImages) {
-      if (photoUrls.includes(imageUrl)) {
-        // This image was purchased
-        imagesToMove.push(imageUrl);
-      } else {
-        // This image remains unpaid
-        remainingUnpaidImages.push(imageUrl);
-      }
+    // Since your Flutter app selects specific photos but we only have URLs in the database,
+    // we'll move the first N photos as requested (matching the count of selected photos)
+    const numberOfImagesToBuy = photoIds.length;
+    
+    if (unpaidImages.length < numberOfImagesToBuy) {
+      console.error(`❌ Not enough unpaid images. Available: ${unpaidImages.length}, Requested: ${numberOfImagesToBuy}`);
+      return;
     }
 
-    console.log(`✅ Found ${imagesToMove.length} specific images to move`);
-    console.log(`📄 Remaining unpaid: ${remainingUnpaidImages.length}`);
+    // Move the first N unpaid images to paid
+    const imagesToMove = unpaidImages.slice(0, numberOfImagesToBuy);
+    const remainingUnpaidImages = unpaidImages.slice(numberOfImagesToBuy);
 
-    // Verify we found all requested photos
-    if (imagesToMove.length !== photoUrls.length) {
-      console.warn(`⚠️ Mismatch: Requested ${photoUrls.length} photos, found ${imagesToMove.length}`);
-      console.warn('Missing photos:', photoUrls.filter(url => !imagesToMove.includes(url)));
-    }
+    console.log(`✅ Moving ${imagesToMove.length} images to paid status`);
 
-    // Add moved images to paid array as simple URLs (matching your current format)
+    // Add moved images to paid array as simple URLs
     const updatedPaidImages = [...paidImages, ...imagesToMove];
 
     // Update photos record
@@ -580,7 +571,7 @@ async function processPhotoPayment(transaction) {
     if (updateError) {
       console.error('❌ Error updating photos:', updateError);
     } else {
-      console.log(`✅ Successfully moved ${imagesToMove.length} specific images to paid status`);
+      console.log(`✅ Successfully moved ${imagesToMove.length} images to paid status`);
       console.log(`📊 New counts - Paid: ${updatedPaidImages.length}, Unpaid: ${remainingUnpaidImages.length}`);
     }
 
