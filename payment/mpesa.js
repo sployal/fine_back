@@ -44,39 +44,35 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
-// SANDBOX ONLY M-Pesa Configuration
+// SANDBOX M-Pesa Configuration
 const MPESA_CONFIG = {
-  // SANDBOX credentials - these are safe to use for testing
-  consumer_key: 'RKNVKZX9aQ1pkfAAA0gM0fadRoJH5ocEjNK0sQmyYB7qln6o', // Standard sandbox key
-  consumer_secret: 'GcwX5AEGwJCvAYq2qDxr99Qh4lfiy6GhDKsoDuefRGLyhZotb7o1ckp0CZ548XBk', // Standard sandbox secret
-  business_short_code: '174379', // Standard test shortcode
-  passkey: 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919', // Standard test passkey
+  consumer_key: 'RKNVKZX9aQ1pkfAAA0gM0fadRoJH5ocEjNK0sQmyYB7qln6o',
+  consumer_secret: 'GcwX5AEGwJCvAYq2qDxr99Qh4lfiy6GhDKsoDuefRGLyhZotb7o1ckp0CZ548XBk',
+  business_short_code: '174379',
+  passkey: 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919',
   
-  // Callback URLs
   callback_url: process.env.MPESA_CALLBACK_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/callback',
   confirmation_url: process.env.MPESA_CONFIRMATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/confirmation',
   validation_url: process.env.MPESA_VALIDATION_URL || 'https://fine-back2.onrender.com/api/payments/mpesa/validation',
   
-  // SANDBOX URLs ONLY - no production mixing
   oauth_url: 'https://sandbox.safaricom.co.ke',
   api_url: 'https://sandbox.safaricom.co.ke'
 };
 
-console.log('🧪 M-Pesa SANDBOX Mode Initialized');
+console.log('M-Pesa SANDBOX Mode Initialized');
 console.log('OAuth URL:', MPESA_CONFIG.oauth_url);
 console.log('API URL:', MPESA_CONFIG.api_url);
 console.log('Business Short Code:', MPESA_CONFIG.business_short_code);
 
-// Get M-Pesa access token - SANDBOX ONLY
+// Get M-Pesa access token
 async function getMpesaAccessToken() {
   try {
-    // For sandbox, we use the standard credentials
     const credentials = Buffer.from(
       `${MPESA_CONFIG.consumer_key}:${MPESA_CONFIG.consumer_secret}`
     ).toString('base64');
 
     const tokenUrl = `${MPESA_CONFIG.oauth_url}/oauth/v1/generate?grant_type=client_credentials`;
-    console.log('🔑 Getting SANDBOX access token from:', tokenUrl);
+    console.log('Getting SANDBOX access token from:', tokenUrl);
 
     const response = await axios.get(tokenUrl, {
       headers: {
@@ -90,12 +86,12 @@ async function getMpesaAccessToken() {
       throw new Error('No access token received from sandbox');
     }
 
-    console.log('✅ SANDBOX access token generated successfully');
+    console.log('SANDBOX access token generated successfully');
     console.log('Token expires in:', response.data.expires_in, 'seconds');
     return response.data.access_token;
     
   } catch (error) {
-    console.error('❌ SANDBOX token error:');
+    console.error('SANDBOX token error:');
     console.error('Status:', error.response?.status);
     console.error('Response:', error.response?.data);
     console.error('Message:', error.message);
@@ -112,7 +108,6 @@ async function getMpesaAccessToken() {
 
 // Generate M-Pesa password for SANDBOX
 function generateMpesaPassword() {
-  // Use current timestamp in EAT (UTC+3)
   const now = new Date();
   const eatTime = new Date(now.getTime() + (3 * 60 * 60 * 1000));
   
@@ -127,14 +122,14 @@ function generateMpesaPassword() {
     `${MPESA_CONFIG.business_short_code}${MPESA_CONFIG.passkey}${timestamp}`
   ).toString('base64');
   
-  console.log('🔐 Generated SANDBOX password');
+  console.log('Generated SANDBOX password');
   console.log('Timestamp (EAT):', timestamp);
   console.log('Password length:', password.length);
   
   return { password, timestamp };
 }
 
-// SANDBOX STK Push
+// STK Push endpoint
 router.post('/mpesa/stk-push', async (req, res) => {
   try {
     const { 
@@ -143,15 +138,15 @@ router.post('/mpesa/stk-push', async (req, res) => {
       transaction_desc, 
       account_reference,
       user_id,
-      photo_ids // Keep original parameter name
+      photo_ids
     } = req.body;
 
-    console.log('📱 SANDBOX STK Push request:', {
+    console.log('SANDBOX STK Push request:', {
       phone: phone_number?.replace(/\d(?=\d{3})/g, '*'),
       amount,
       user_id: user_id?.substring(0, 8) + '...',
       photos: photo_ids?.length,
-      photo_ids: photo_ids // For debugging
+      photo_ids: photo_ids
     });
 
     // Validate required fields
@@ -162,17 +157,15 @@ router.post('/mpesa/stk-push', async (req, res) => {
       });
     }
 
-    // Clean and validate phone number for Kenya
+    // Clean and validate phone number
     let cleanPhone = phone_number.replace(/\D/g, '');
     
-    // Convert to 254 format
     if (cleanPhone.startsWith('0')) {
       cleanPhone = '254' + cleanPhone.substring(1);
     } else if (cleanPhone.startsWith('7') || cleanPhone.startsWith('1')) {
       cleanPhone = '254' + cleanPhone;
     }
     
-    // Validate final format (254 followed by 7 or 1, then 8 more digits)
     if (!cleanPhone.match(/^254[71]\d{8}$/)) {
       return res.status(400).json({
         success: false,
@@ -189,14 +182,14 @@ router.post('/mpesa/stk-push', async (req, res) => {
       });
     }
 
-    console.log('✅ Validation passed. Phone:', cleanPhone, 'Amount:', numAmount);
+    console.log('Validation passed. Phone:', cleanPhone, 'Amount:', numAmount);
 
-    // Get SANDBOX access token
+    // Get access token
     let accessToken;
     try {
       accessToken = await getMpesaAccessToken();
     } catch (tokenError) {
-      console.error('❌ SANDBOX token failed:', tokenError.message);
+      console.error('SANDBOX token failed:', tokenError.message);
       return res.status(500).json({
         success: false,
         error: 'Failed to authenticate with M-Pesa sandbox',
@@ -207,10 +200,10 @@ router.post('/mpesa/stk-push', async (req, res) => {
     // Generate password and timestamp
     const { password, timestamp } = generateMpesaPassword();
 
-    // Create transaction record - CHANGED: Store photo_urls instead of photo_ids
+    // Create transaction record
     const transactionId = `SANDBOX_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    console.log('💾 Creating transaction record:', transactionId);
+    console.log('Creating transaction record:', transactionId);
     
     const { error: dbError } = await supabase
       .from('mpesa_transactions')
@@ -219,13 +212,13 @@ router.post('/mpesa/stk-push', async (req, res) => {
         user_id: user_id,
         phone_number: cleanPhone,
         amount: numAmount,
-        photo_ids: photo_ids, // Store the data as received from Flutter
+        photo_ids: photo_ids,
         status: 'initiated',
         created_at: new Date().toISOString()
       }]);
 
     if (dbError) {
-      console.error('❌ Database error:', dbError);
+      console.error('Database error:', dbError);
       return res.status(500).json({
         success: false,
         error: 'Failed to create transaction record',
@@ -233,29 +226,24 @@ router.post('/mpesa/stk-push', async (req, res) => {
       });
     }
 
-    // Prepare STK Push data for SANDBOX
+    // Prepare STK Push data
     const stkPushData = {
-      BusinessShortCode: 174379,  // Fixed sandbox shortcode
+      BusinessShortCode: 174379,
       Password: password,
       Timestamp: timestamp,
       TransactionType: 'CustomerPayBillOnline',
       Amount: Math.round(numAmount),
       PartyA: parseInt(cleanPhone),
-      PartyB: 174379,  // Same as business shortcode
+      PartyB: 174379,
       PhoneNumber: parseInt(cleanPhone),
       CallBackURL: MPESA_CONFIG.callback_url,
       AccountReference: account_reference || transactionId,
       TransactionDesc: transaction_desc || `Photo Purchase - ${photo_ids.length} photo(s)`
     };
 
-    console.log('🚀 Sending SANDBOX STK Push...');
-    console.log('Request data:', {
-      ...stkPushData,
-      Password: '***HIDDEN***',
-      PhoneNumber: '***HIDDEN***'
-    });
+    console.log('Sending SANDBOX STK Push...');
 
-    // Send STK Push to SANDBOX
+    // Send STK Push
     const stkResponse = await axios.post(
       `${MPESA_CONFIG.api_url}/mpesa/stkpush/v1/processrequest`,
       stkPushData,
@@ -268,14 +256,14 @@ router.post('/mpesa/stk-push', async (req, res) => {
       }
     );
 
-    console.log('📨 SANDBOX STK Response:', {
+    console.log('SANDBOX STK Response:', {
       ResponseCode: stkResponse.data.ResponseCode,
       ResponseDescription: stkResponse.data.ResponseDescription,
       CheckoutRequestID: stkResponse.data.CheckoutRequestID
     });
 
     if (stkResponse.data.ResponseCode === '0') {
-      // Success - update transaction
+      // Update transaction with checkout details
       await supabase
         .from('mpesa_transactions')
         .update({
@@ -285,7 +273,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
         })
         .eq('transaction_id', transactionId);
 
-      console.log('✅ SANDBOX STK Push successful!');
+      console.log('SANDBOX STK Push successful!');
 
       res.json({
         success: true,
@@ -295,7 +283,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
         customer_message: stkResponse.data.CustomerMessage || 'Check your phone for M-Pesa prompt'
       });
     } else {
-      // Failed - update transaction
+      // Update transaction as failed
       await supabase
         .from('mpesa_transactions')
         .update({ 
@@ -304,7 +292,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
         })
         .eq('transaction_id', transactionId);
 
-      console.log('❌ SANDBOX STK Push failed:', stkResponse.data.ResponseDescription);
+      console.log('SANDBOX STK Push failed:', stkResponse.data.ResponseDescription);
 
       res.status(400).json({
         success: false,
@@ -313,7 +301,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
     }
 
   } catch (error) {
-    console.error('❌ SANDBOX STK Push error:', error.response?.data || error.message);
+    console.error('SANDBOX STK Push error:', error.response?.data || error.message);
     
     let errorMessage = 'Failed to initiate payment';
     if (error.response?.data?.errorMessage) {
@@ -330,10 +318,10 @@ router.post('/mpesa/stk-push', async (req, res) => {
   }
 });
 
-// M-Pesa Callback Handler
+// M-Pesa Callback Handler - FIXED
 router.post('/mpesa/callback', async (req, res) => {
   try {
-    console.log('📞 SANDBOX Callback received:', JSON.stringify(req.body, null, 2));
+    console.log('SANDBOX Callback received:', JSON.stringify(req.body, null, 2));
 
     const { Body } = req.body;
     const stkCallback = Body?.stkCallback;
@@ -357,13 +345,13 @@ router.post('/mpesa/callback', async (req, res) => {
       .single();
 
     if (error || !transaction) {
-      console.error('Transaction not found:', checkoutRequestId);
+      console.error('Transaction not found:', checkoutRequestId, error);
       return res.json({ ResultCode: 0, ResultDesc: 'Transaction not found' });
     }
 
     if (resultCode === 0) {
       // Payment successful
-      console.log('✅ SANDBOX Payment successful!');
+      console.log('SANDBOX Payment successful!');
       
       const callbackMetadata = stkCallback.CallbackMetadata?.Item || [];
       const mpesaReceiptNumber = callbackMetadata.find(item => item.Name === 'MpesaReceiptNumber')?.Value;
@@ -383,12 +371,12 @@ router.post('/mpesa/callback', async (req, res) => {
         })
         .eq('transaction_id', transaction.transaction_id);
 
-      // Process the photo payment
+      // Process the photo payment - FIXED FUNCTION
       await processPhotoPayment(transaction);
 
     } else {
       // Payment failed
-      console.log('❌ SANDBOX Payment failed:', resultDesc);
+      console.log('SANDBOX Payment failed:', resultDesc);
       
       await supabase
         .from('mpesa_transactions')
@@ -410,15 +398,138 @@ router.post('/mpesa/callback', async (req, res) => {
   }
 });
 
+// FIXED: Process photo payment function
+async function processPhotoPayment(transaction) {
+  try {
+    const photoIds = transaction.photo_ids;
+    const userId = transaction.user_id;
+    const numberOfPhotosRequested = photoIds.length;
+
+    console.log(`Processing photo payment for user ${userId}`);
+    console.log(`Photos requested: ${numberOfPhotosRequested}`);
+    console.log(`Photo IDs from Flutter:`, photoIds);
+
+    // Get ALL photo records for this recipient (FIXED: removed .single())
+    const { data: photoRecords, error: fetchError } = await supabase
+      .from('photos')
+      .select('*')
+      .eq('recipient_id', userId)
+      .order('created_at', { ascending: true }); // Process oldest records first
+
+    if (fetchError) {
+      console.error('Database error fetching photo records:', fetchError);
+      return;
+    }
+
+    if (!photoRecords || photoRecords.length === 0) {
+      console.error('No photo records found for user:', userId);
+      return;
+    }
+
+    console.log(`Found ${photoRecords.length} photo record(s) for user`);
+
+    // Calculate total unpaid images available
+    let totalUnpaidImages = 0;
+    photoRecords.forEach(record => {
+      const unpaidCount = record.unpaid_images ? record.unpaid_images.length : 0;
+      totalUnpaidImages += unpaidCount;
+      console.log(`Record ${record.id}: ${unpaidCount} unpaid images`);
+    });
+
+    if (totalUnpaidImages === 0) {
+      console.error('No unpaid images found for user:', userId);
+      return;
+    }
+
+    if (totalUnpaidImages < numberOfPhotosRequested) {
+      console.warn(`Not enough unpaid images. Available: ${totalUnpaidImages}, Requested: ${numberOfPhotosRequested}`);
+      // Continue with available images instead of failing
+    }
+
+    console.log(`Total unpaid images available: ${totalUnpaidImages}`);
+
+    // Process photo records and move images from unpaid to paid
+    let totalImagesMoved = 0;
+    const targetCount = Math.min(numberOfPhotosRequested, totalUnpaidImages);
+
+    for (const photoRecord of photoRecords) {
+      if (totalImagesMoved >= targetCount) {
+        break; // We've moved enough images
+      }
+
+      const unpaidImages = photoRecord.unpaid_images || [];
+      const paidImages = photoRecord.paid_images || [];
+
+      if (unpaidImages.length === 0) {
+        continue; // No unpaid images in this record
+      }
+
+      // Calculate how many images to move from this record
+      const imagesNeeded = targetCount - totalImagesMoved;
+      const imagesToMoveFromThisRecord = Math.min(imagesNeeded, unpaidImages.length);
+
+      // Move images from unpaid to paid
+      const imagesToMove = unpaidImages.slice(0, imagesToMoveFromThisRecord);
+      const remainingUnpaidImages = unpaidImages.slice(imagesToMoveFromThisRecord);
+      const updatedPaidImages = [...paidImages, ...imagesToMove];
+
+      console.log(`Moving ${imagesToMove.length} images from record ${photoRecord.id}`);
+      console.log(`Images being moved:`, imagesToMove.slice(0, 2)); // Log first 2 URLs for verification
+
+      // Update this specific photo record
+      const { error: updateError } = await supabase
+        .from('photos')
+        .update({
+          unpaid_images: remainingUnpaidImages,
+          paid_images: updatedPaidImages,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', photoRecord.id);
+
+      if (updateError) {
+        console.error(`Error updating photo record ${photoRecord.id}:`, updateError);
+        continue; // Continue with other records even if one fails
+      } else {
+        console.log(`Successfully updated record ${photoRecord.id}`);
+        console.log(`  - Moved: ${imagesToMove.length} images to paid`);
+        console.log(`  - Remaining unpaid: ${remainingUnpaidImages.length}`);
+        console.log(`  - Total paid: ${updatedPaidImages.length}`);
+        
+        totalImagesMoved += imagesToMove.length;
+      }
+    }
+
+    // Final summary
+    console.log(`PAYMENT PROCESSING COMPLETE`);
+    console.log(`  - User: ${userId}`);
+    console.log(`  - Requested: ${numberOfPhotosRequested} photos`);
+    console.log(`  - Actually moved: ${totalImagesMoved} photos`);
+    console.log(`  - Transaction: ${transaction.transaction_id}`);
+    console.log(`  - M-Pesa Receipt: ${transaction.mpesa_receipt_number || 'N/A'}`);
+
+    if (totalImagesMoved === 0) {
+      console.error('CRITICAL: No images were moved to paid status!');
+    } else if (totalImagesMoved < numberOfPhotosRequested) {
+      console.warn(`Partial payment processing: moved ${totalImagesMoved}/${numberOfPhotosRequested} photos`);
+    } else {
+      console.log('Payment processing successful - all requested photos moved to paid status');
+    }
+
+  } catch (error) {
+    console.error('Photo payment processing error:', error);
+    console.error('Stack trace:', error.stack);
+  }
+}
+
 // Validation endpoint
 router.post('/mpesa/validation', (req, res) => {
-  console.log('🔍 SANDBOX Validation:', req.body);
+  console.log('SANDBOX Validation:', req.body);
   res.json({ ResultCode: 0, ResultDesc: 'Validation successful' });
 });
 
 // Confirmation endpoint  
 router.post('/mpesa/confirmation', (req, res) => {
-  console.log('✅ SANDBOX Confirmation:', req.body);
+  console.log('SANDBOX Confirmation:', req.body);
   res.json({ ResultCode: 0, ResultDesc: 'Confirmation successful' });
 });
 
@@ -463,10 +574,121 @@ router.get('/mpesa/transaction/:transactionId', async (req, res) => {
   }
 });
 
-// SANDBOX Test Configuration
+// Get user transactions (with auth)
+router.get('/transactions', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { page = 1, limit = 20, status } = req.query;
+
+    let query = supabase
+      .from('mpesa_transactions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .range((page - 1) * limit, page * limit - 1);
+
+    if (status && status !== 'all') {
+      query = query.eq('status', status);
+    }
+
+    const { data: transactions, error } = await query;
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch transactions'
+      });
+    }
+
+    // Get total count for pagination
+    let countQuery = supabase
+      .from('mpesa_transactions')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    if (status && status !== 'all') {
+      countQuery = countQuery.eq('status', status);
+    }
+
+    const { count, error: countError } = await countQuery;
+
+    res.json({
+      success: true,
+      transactions: transactions || [],
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count || 0,
+        hasMore: count > page * limit
+      }
+    });
+
+  } catch (error) {
+    console.error('Get transactions error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch transactions'
+    });
+  }
+});
+
+// Payment summary (with auth)
+router.get('/summary', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const { data: transactions, error } = await supabase
+      .from('mpesa_transactions')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch payment summary'
+      });
+    }
+
+    const completedTransactions = transactions.filter(t => t.status === 'completed');
+    const pendingTransactions = transactions.filter(t => t.status === 'pending');
+    const failedTransactions = transactions.filter(t => t.status === 'failed');
+
+    const totalAmountPaid = completedTransactions.reduce((sum, t) => sum + (t.amount || 0), 0);
+    const averageTransactionAmount = completedTransactions.length > 0 
+      ? totalAmountPaid / completedTransactions.length 
+      : 0;
+
+    const lastTransaction = transactions.length > 0 
+      ? transactions.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0]
+      : null;
+
+    res.json({
+      success: true,
+      summary: {
+        user_id: userId,
+        total_transactions: transactions.length,
+        completed_transactions: completedTransactions.length,
+        pending_transactions: pendingTransactions.length,
+        failed_transactions: failedTransactions.length,
+        total_amount_paid: totalAmountPaid,
+        average_transaction_amount: averageTransactionAmount,
+        last_transaction_date: lastTransaction?.created_at || null
+      }
+    });
+
+  } catch (error) {
+    console.error('Get payment summary error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch payment summary'
+    });
+  }
+});
+
+// Test configuration endpoint
 router.get('/test-config', async (req, res) => {
   try {
-    console.log('🧪 Testing SANDBOX configuration...');
+    console.log('Testing SANDBOX configuration...');
     
     const testResults = {
       mode: 'SANDBOX',
@@ -512,72 +734,5 @@ router.get('/test-config', async (req, res) => {
     });
   }
 });
-
-// FIXED: Process photo payment helper - Now handles photo IDs properly
-async function processPhotoPayment(transaction) {
-  try {
-    const photoIds = transaction.photo_ids; // Photo IDs from Flutter
-    const userId = transaction.user_id;
-
-    console.log(`🖼️ Processing photo payment for user ${userId}`);
-    console.log(`🎯 Photo IDs received:`, photoIds);
-
-    // Get user's photos
-    const { data: photoRecord, error: fetchError } = await supabase
-      .from('photos')
-      .select('*')
-      .eq('recipient_id', userId)
-      .single();
-
-    if (fetchError || !photoRecord) {
-      console.error('Photo record not found:', userId, fetchError);
-      return;
-    }
-
-    const unpaidImages = photoRecord.unpaid_images || [];
-    const paidImages = photoRecord.paid_images || [];
-
-    console.log(`📋 Current unpaid images count: ${unpaidImages.length}`);
-    console.log(`📋 Current paid images count: ${paidImages.length}`);
-
-    // Since your Flutter app selects specific photos but we only have URLs in the database,
-    // we'll move the first N photos as requested (matching the count of selected photos)
-    const numberOfImagesToBuy = photoIds.length;
-    
-    if (unpaidImages.length < numberOfImagesToBuy) {
-      console.error(`❌ Not enough unpaid images. Available: ${unpaidImages.length}, Requested: ${numberOfImagesToBuy}`);
-      return;
-    }
-
-    // Move the first N unpaid images to paid
-    const imagesToMove = unpaidImages.slice(0, numberOfImagesToBuy);
-    const remainingUnpaidImages = unpaidImages.slice(numberOfImagesToBuy);
-
-    console.log(`✅ Moving ${imagesToMove.length} images to paid status`);
-
-    // Add moved images to paid array as simple URLs
-    const updatedPaidImages = [...paidImages, ...imagesToMove];
-
-    // Update photos record
-    const { error: updateError } = await supabase
-      .from('photos')
-      .update({
-        unpaid_images: remainingUnpaidImages,
-        paid_images: updatedPaidImages,
-        updated_at: new Date().toISOString()
-      })
-      .eq('recipient_id', userId);
-
-    if (updateError) {
-      console.error('❌ Error updating photos:', updateError);
-    } else {
-      console.log(`✅ Successfully moved ${imagesToMove.length} images to paid status`);
-      console.log(`📊 New counts - Paid: ${updatedPaidImages.length}, Unpaid: ${remainingUnpaidImages.length}`);
-    }
-
-  } catch (error) {
-    console.error('❌ Photo payment processing error:', error);
-  }
-}
 
 module.exports = router;
