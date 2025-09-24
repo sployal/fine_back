@@ -318,7 +318,7 @@ router.post('/mpesa/stk-push', async (req, res) => {
   }
 });
 
-// M-Pesa Callback Handler - FIXED
+// M-Pesa Callback Handler - Updated for new schema
 router.post('/mpesa/callback', async (req, res) => {
   try {
     console.log('SANDBOX Callback received:', JSON.stringify(req.body, null, 2));
@@ -371,7 +371,7 @@ router.post('/mpesa/callback', async (req, res) => {
         })
         .eq('transaction_id', transaction.transaction_id);
 
-      // Process the photo payment - FIXED FUNCTION
+      // Process the photo payment - Updated function
       await processPhotoPayment(transaction);
 
     } else {
@@ -398,122 +398,111 @@ router.post('/mpesa/callback', async (req, res) => {
   }
 });
 
-// FIXED: Process photo payment function
+// UPDATED: Process photo payment function for new schema
 async function processPhotoPayment(transaction) {
   try {
-    const photoIds = transaction.photo_ids;
+    const imageIds = transaction.photo_ids; // Array of image IDs from Flutter
     const userId = transaction.user_id;
-    const numberOfPhotosRequested = photoIds.length;
+    const numberOfPhotosRequested = imageIds.length;
 
     console.log(`Processing photo payment for user ${userId}`);
     console.log(`Photos requested: ${numberOfPhotosRequested}`);
-    console.log(`Photo IDs from Flutter:`, photoIds);
+    console.log(`Image IDs from Flutter:`, imageIds);
 
-    // Get ALL photo records for this recipient (FIXED: removed .single())
-    const { data: photoRecords, error: fetchError } = await supabase
-      .from('photos')
-      .select('*')
-      .eq('recipient_id', userId)
-      .order('created_at', { ascending: true }); // Process oldest records first
+    // Validate that the images exist and belong to photos where user is recipient
+    const { data: images, error: fetchError } = await supabase
+      .from('images')
+      .select(`
+        id,
+        photo_collection_id,
+        status,
+        photos!inner(
+          id,
+          recipient_id,
+          sender_id
+        )
+      `)
+      .in('id', imageIds)
+      .eq('photos.recipient_id', userId)
+      .eq('status', 'unpaid');
 
     if (fetchError) {
-      console.error('Database error fetching photo records:', fetchError);
+      console.error('Database error fetching images:', fetchError);
       return;
     }
 
-    if (!photoRecords || photoRecords.length === 0) {
-      console.error('No photo records found for user:', userId);
+    if (!images || images.length === 0) {
+      console.error('No valid unpaid images found for user:', userId);
+      console.error('Requested image IDs:', imageIds);
       return;
     }
 
-    console.log(`Found ${photoRecords.length} photo record(s) for user`);
+    console.log(`Found ${images.length} valid unpaid images out of ${numberOfPhotosRequested} requested`);
 
-    // Calculate total unpaid images available
-    let totalUnpaidImages = 0;
-    photoRecords.forEach(record => {
-      const unpaidCount = record.unpaid_images ? record.unpaid_images.length : 0;
-      totalUnpaidImages += unpaidCount;
-      console.log(`Record ${record.id}: ${unpaidCount} unpaid images`);
+    if (images.length < numberOfPhotosRequested) {
+      console.warn(`Not all requested images are available. Available: ${images.length}, Requested: ${numberOfPhotosRequested}`);
+    }
+
+    // Update image statuses to 'paid'
+    const imageIdsToUpdate = images.map(img => img.id);
+    
+    const { data: updatedImages, error: updateError } = await supabase
+      .from('images')
+      .update({ 
+        status: 'paid',
+        updated_at: new Date().toISOString()
+      })
+      .in('id', imageIdsToUpdate)
+      .select('id, photo_collection_id');
+
+    if (updateError) {
+      console.error('Error updating image statuses:', updateError);
+      return;
+    }
+
+    if (!updatedImages || updatedImages.length === 0) {
+      console.error('CRITICAL: No images were updated to paid status!');
+      return;
+    }
+
+    console.log(`Successfully updated ${updatedImages.length} images to paid status`);
+
+    // Group by photo collections for summary
+    const photoCollections = {};
+    updatedImages.forEach(img => {
+      if (!photoCollections[img.photo_collection_id]) {
+        photoCollections[img.photo_collection_id] = 0;
+      }
+      photoCollections[img.photo_collection_id]++;
     });
 
-    if (totalUnpaidImages === 0) {
-      console.error('No unpaid images found for user:', userId);
-      return;
-    }
-
-    if (totalUnpaidImages < numberOfPhotosRequested) {
-      console.warn(`Not enough unpaid images. Available: ${totalUnpaidImages}, Requested: ${numberOfPhotosRequested}`);
-      // Continue with available images instead of failing
-    }
-
-    console.log(`Total unpaid images available: ${totalUnpaidImages}`);
-
-    // Process photo records and move images from unpaid to paid
-    let totalImagesMoved = 0;
-    const targetCount = Math.min(numberOfPhotosRequested, totalUnpaidImages);
-
-    for (const photoRecord of photoRecords) {
-      if (totalImagesMoved >= targetCount) {
-        break; // We've moved enough images
-      }
-
-      const unpaidImages = photoRecord.unpaid_images || [];
-      const paidImages = photoRecord.paid_images || [];
-
-      if (unpaidImages.length === 0) {
-        continue; // No unpaid images in this record
-      }
-
-      // Calculate how many images to move from this record
-      const imagesNeeded = targetCount - totalImagesMoved;
-      const imagesToMoveFromThisRecord = Math.min(imagesNeeded, unpaidImages.length);
-
-      // Move images from unpaid to paid
-      const imagesToMove = unpaidImages.slice(0, imagesToMoveFromThisRecord);
-      const remainingUnpaidImages = unpaidImages.slice(imagesToMoveFromThisRecord);
-      const updatedPaidImages = [...paidImages, ...imagesToMove];
-
-      console.log(`Moving ${imagesToMove.length} images from record ${photoRecord.id}`);
-      console.log(`Images being moved:`, imagesToMove.slice(0, 2)); // Log first 2 URLs for verification
-
-      // Update this specific photo record
-      const { error: updateError } = await supabase
-        .from('photos')
-        .update({
-          unpaid_images: remainingUnpaidImages,
-          paid_images: updatedPaidImages,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', photoRecord.id);
-
-      if (updateError) {
-        console.error(`Error updating photo record ${photoRecord.id}:`, updateError);
-        continue; // Continue with other records even if one fails
-      } else {
-        console.log(`Successfully updated record ${photoRecord.id}`);
-        console.log(`  - Moved: ${imagesToMove.length} images to paid`);
-        console.log(`  - Remaining unpaid: ${remainingUnpaidImages.length}`);
-        console.log(`  - Total paid: ${updatedPaidImages.length}`);
-        
-        totalImagesMoved += imagesToMove.length;
-      }
-    }
-
-    // Final summary
-    console.log(`PAYMENT PROCESSING COMPLETE`);
+    // Log summary by photo collection
+    console.log(`Payment processing summary:`);
     console.log(`  - User: ${userId}`);
-    console.log(`  - Requested: ${numberOfPhotosRequested} photos`);
-    console.log(`  - Actually moved: ${totalImagesMoved} photos`);
+    console.log(`  - Requested: ${numberOfPhotosRequested} images`);
+    console.log(`  - Successfully processed: ${updatedImages.length} images`);
+    console.log(`  - Photo collections affected: ${Object.keys(photoCollections).length}`);
     console.log(`  - Transaction: ${transaction.transaction_id}`);
     console.log(`  - M-Pesa Receipt: ${transaction.mpesa_receipt_number || 'N/A'}`);
 
-    if (totalImagesMoved === 0) {
-      console.error('CRITICAL: No images were moved to paid status!');
-    } else if (totalImagesMoved < numberOfPhotosRequested) {
-      console.warn(`Partial payment processing: moved ${totalImagesMoved}/${numberOfPhotosRequested} photos`);
-    } else {
-      console.log('Payment processing successful - all requested photos moved to paid status');
+    Object.entries(photoCollections).forEach(([collectionId, count]) => {
+      console.log(`    * Collection ${collectionId}: ${count} images paid`);
+    });
+
+    // Optional: Update photos table if you want to track payment status at collection level
+    const uniqueCollectionIds = Object.keys(photoCollections);
+    if (uniqueCollectionIds.length > 0) {
+      const { error: photoUpdateError } = await supabase
+        .from('photos')
+        .update({ updated_at: new Date().toISOString() })
+        .in('id', uniqueCollectionIds);
+
+      if (photoUpdateError) {
+        console.warn('Warning: Could not update photos updated_at timestamp:', photoUpdateError);
+      }
     }
+
+    console.log('PAYMENT PROCESSING COMPLETE - All operations successful');
 
   } catch (error) {
     console.error('Photo payment processing error:', error);
