@@ -203,7 +203,7 @@ try {
   console.log('📝 Profile image functionality will be disabled');
 }
 
-// Add this with your other route imports
+// Load delete post routes BEFORE main server routes to prevent conflicts
 try {
   const deletePostRoutes = require('./delete/delete_post');
   app.use('/api/posts', deletePostRoutes);
