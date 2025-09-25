@@ -81,7 +81,7 @@ app.use(limiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Configure multer for file uploads
+// Configure multer for file uploads (for posts)
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
@@ -123,12 +123,12 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
-// Helper function to upload image to Cloudinary
+// Helper function to upload POST images to Cloudinary
 const uploadToCloudinary = (buffer, originalName) => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
-        folder: 'posts',
+        folder: 'posts', // Keep posts in the posts folder
         resource_type: 'image',
         transformation: [
           { quality: 'auto:good' },
@@ -193,6 +193,16 @@ app.get('/api/debug/routes', (req, res) => {
   });
 });
 
+// Try to import profile images routes
+try {
+  const profileImageRoutes = require('./profiles/profile_images');
+  app.use('/api/profile', profileImageRoutes);
+  console.log('✅ Profile images routes loaded successfully');
+} catch (error) {
+  console.error('⚠️ Failed to load profile images routes:', error.message);
+  console.log('📝 Profile image functionality will be disabled');
+}
+
 // Try to import image routes with error handling
 try {
   const imageRoutes = require('./imagesend/image');
@@ -213,7 +223,7 @@ try {
   console.log('📝 M-Pesa payment functionality will be disabled');
 }
 
-// Upload images endpoint
+// Upload POST images endpoint (keeps using posts folder)
 app.post('/api/upload-images', uploadLimiter, authenticateUser, upload.array('images', 5), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
