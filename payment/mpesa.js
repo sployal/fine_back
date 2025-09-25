@@ -14,6 +14,14 @@ const supabase = createClient(
     auth: {
       autoRefreshToken: false,
       persistSession: false
+    },
+    db: {
+      schema: 'public'
+    },
+    global: {
+      headers: {
+        'apikey': process.env.SUPABASE_SERVICE_KEY
+      }
     }
   }
 );
