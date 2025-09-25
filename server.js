@@ -223,6 +223,16 @@ try {
   console.log('📝 M-Pesa payment functionality will be disabled');
 }
 
+// Try to import delete routes with error handling
+try {
+  const deleteRoutes = require('./delete/delete_sent');
+  app.use('/api/images', deleteRoutes);
+  console.log('✅ Delete image routes loaded successfully');
+} catch (error) {
+  console.error('⚠️ Failed to load delete image routes:', error.message);
+  console.log('📝 Image deletion functionality will be disabled');
+}
+
 // Upload POST images endpoint (keeps using posts folder)
 app.post('/api/upload-images', uploadLimiter, authenticateUser, upload.array('images', 5), async (req, res) => {
   try {
