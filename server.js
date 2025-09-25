@@ -203,6 +203,16 @@ try {
   console.log('📝 Profile image functionality will be disabled');
 }
 
+// Add this with your other route imports
+try {
+  const deletePostRoutes = require('./delete/delete_post');
+  app.use('/api/posts', deletePostRoutes);
+  console.log('✅ Delete post routes loaded successfully');
+} catch (error) {
+  console.error('⚠️ Failed to load delete post routes:', error.message);
+  console.log('📝 Post deletion functionality will be disabled');
+}
+
 // Try to import image routes with error handling
 try {
   const imageRoutes = require('./imagesend/image');

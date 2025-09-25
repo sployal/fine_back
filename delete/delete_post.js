@@ -1,9 +1,6 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const cloudinary = require('cloudinary').v2;
-const rateLimit = require('express-rate-limit');
-require('dotenv').config();
-
 const router = express.Router();
 
 // Initialize Supabase client
@@ -17,15 +14,6 @@ const supabase = createClient(
     }
   }
 );
-
-// Rate limiting for delete operations
-const deleteRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // limit each IP to 30 delete requests per windowMs
-  message: { error: 'Too many delete requests, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
 
 // Authentication middleware
 const authenticateUser = async (req, res, next) => {
@@ -52,566 +40,503 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
-// Admin authentication middleware (for dangerous operations)
-const authenticateAdmin = async (req, res, next) => {
+// Helper function to check if user is admin
+const isUserAdmin = async (userId) => {
   try {
-    await authenticateUser(req, res, async () => {
-      // Check if user has admin privileges
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('user_type, is_admin')
-        .eq('id', req.user.id)
-        .single();
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('user_type')
+      .eq('id', userId)
+      .single();
 
-      if (!profile || (!profile.is_admin && profile.user_type !== 'admin')) {
-        return res.status(403).json({ error: 'Admin privileges required' });
-      }
-      
-      next();
-    });
+    return profile && profile.user_type === 'admin';
   } catch (error) {
-    console.error('Admin auth error:', error);
-    res.status(403).json({ error: 'Admin authentication failed' });
-  }
-};
-
-// Helper function to extract Cloudinary public ID from URL
-const extractPublicIdFromUrl = (imageUrl, folder = null) => {
-  try {
-    if (!imageUrl || typeof imageUrl !== 'string') {
-      return null;
-    }
-
-    // Handle Cloudinary URLs with various patterns
-    const patterns = [
-      /\/upload\/(?:v\d+\/)?(.+?)\./,  // Standard pattern
-      /\/image\/upload\/(?:v\d+\/)?(.+?)\./,  // With /image/
-      /\/video\/upload\/(?:v\d+\/)?(.+?)\./,  // Video uploads
-      /\/raw\/upload\/(?:v\d+\/)?(.+?)\./     // Raw files
-    ];
-
-    for (const pattern of patterns) {
-      const match = imageUrl.match(pattern);
-      if (match && match[1]) {
-        let publicId = match[1];
-        
-        // If a folder is specified and not already in the public ID
-        if (folder && !publicId.startsWith(folder + '/')) {
-          publicId = `${folder}/${publicId}`;
-        }
-        
-        return publicId;
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Error extracting public ID from URL:', imageUrl, error);
-    return null;
+    console.error('Error checking admin status:', error);
+    return false;
   }
 };
 
 // Helper function to delete image from Cloudinary
-const deleteFromCloudinary = async (publicId, resourceType = 'image') => {
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader.destroy(publicId, { resource_type: resourceType }, (error, result) => {
-      if (error) {
-        console.error('Cloudinary delete error:', error);
-        reject(error);
-      } else {
-        console.log('Cloudinary delete result:', result);
-        resolve(result);
-      }
-    });
-  });
-};
-
-// Helper function to delete multiple images from Cloudinary
-const deleteMultipleFromCloudinary = async (imageUrls, folder = null, resourceType = 'image') => {
-  const deletionResults = [];
-  
-  for (const imageUrl of imageUrls) {
-    try {
-      const publicId = extractPublicIdFromUrl(imageUrl, folder);
-      
-      if (publicId) {
-        console.log(`🗑️ Deleting from Cloudinary: ${publicId}`);
-        const result = await deleteFromCloudinary(publicId, resourceType);
-        deletionResults.push({
-          url: imageUrl,
-          publicId: publicId,
-          success: result.result === 'ok',
-          result: result
-        });
-      } else {
-        console.log(`⚠️ Could not extract public ID from URL: ${imageUrl}`);
-        deletionResults.push({
-          url: imageUrl,
-          publicId: null,
-          success: false,
-          error: 'Could not extract public ID'
-        });
-      }
-    } catch (error) {
-      console.error(`❌ Failed to delete image ${imageUrl}:`, error);
-      deletionResults.push({
-        url: imageUrl,
-        publicId: extractPublicIdFromUrl(imageUrl, folder),
-        success: false,
-        error: error.message
-      });
-    }
-  }
-  
-  return deletionResults;
-};
-
-// Helper function to get images from any table record
-const getImagesFromRecord = (record, imageColumns) => {
-  const images = [];
-  
-  imageColumns.forEach(column => {
-    if (record[column]) {
-      if (Array.isArray(record[column])) {
-        images.push(...record[column]);
-      } else if (typeof record[column] === 'string') {
-        images.push(record[column]);
-      }
-    }
-  });
-  
-  return images.filter(img => img && typeof img === 'string' && img.includes('cloudinary'));
-};
-
-// Helper function to validate table configuration
-const validateTableConfig = (config) => {
-  const required = ['tableName', 'idColumn', 'imageColumns'];
-  const missing = required.filter(field => !config[field]);
-  
-  if (missing.length > 0) {
-    throw new Error(`Missing required fields: ${missing.join(', ')}`);
-  }
-  
-  if (!Array.isArray(config.imageColumns) || config.imageColumns.length === 0) {
-    throw new Error('imageColumns must be a non-empty array');
-  }
-  
-  return true;
-};
-
-// GENERIC DELETE: Remove record and its images from any table
-router.delete('/record/:tableName/:recordId', deleteRateLimit, authenticateUser, async (req, res) => {
+const deleteFromCloudinary = async (imageUrl) => {
   try {
-    const { tableName, recordId } = req.params;
-    const { 
-      imageColumns = ['images', 'image_url', 'avatar_url'],
-      ownershipColumn = 'user_id',
-      cloudinaryFolder = null,
-      resourceType = 'image',
-      cascadeDeletes = []
-    } = req.body;
+    if (!imageUrl || !imageUrl.includes('cloudinary.com')) {
+      return { success: true, result: 'not_cloudinary' };
+    }
 
+    // Extract public_id from Cloudinary URL
+    const urlParts = imageUrl.split('/');
+    const uploadIndex = urlParts.indexOf('upload');
+    
+    if (uploadIndex === -1) {
+      return { success: false, error: 'Invalid Cloudinary URL format' };
+    }
+
+    // Get public_id (skip version if present)
+    let startIndex = uploadIndex + 1;
+    if (urlParts[startIndex] && urlParts[startIndex].startsWith('v')) {
+      startIndex++;
+    }
+    
+    const publicIdParts = urlParts.slice(startIndex);
+    let publicId = publicIdParts.join('/');
+    publicId = publicId.replace(/\.[^/.]+$/, ''); // Remove file extension
+
+    console.log(`🗑️ Deleting from Cloudinary: ${publicId}`);
+
+    const result = await cloudinary.uploader.destroy(publicId, {
+      resource_type: 'image'
+    });
+
+    if (result.result === 'ok') {
+      console.log(`✅ Cloudinary deletion successful: ${publicId}`);
+      return { success: true, result };
+    } else if (result.result === 'not found') {
+      console.log(`ℹ️ Image not found in Cloudinary: ${publicId}`);
+      return { success: true, result: 'not_found' };
+    } else {
+      console.log(`⚠️ Cloudinary deletion failed: ${publicId} - ${result.result}`);
+      return { success: false, error: `Cloudinary deletion failed: ${result.result}` };
+    }
+  } catch (error) {
+    console.error('Cloudinary deletion error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Helper function to delete all images associated with a post from Cloudinary
+const deletePostImagesFromCloudinary = async (images) => {
+  const results = {
+    total: images.length,
+    successful: 0,
+    failed: 0,
+    errors: []
+  };
+
+  for (let i = 0; i < images.length; i++) {
+    const imageUrl = images[i];
+    console.log(`🖼️ Processing image ${i + 1}/${images.length}: ${imageUrl}`);
+
+    const cloudinaryResult = await deleteFromCloudinary(imageUrl);
+    
+    if (cloudinaryResult.success) {
+      results.successful++;
+      if (cloudinaryResult.result !== 'not_cloudinary' && cloudinaryResult.result !== 'not_found') {
+        console.log(`✅ Image ${i + 1} deleted from Cloudinary`);
+      }
+    } else {
+      results.failed++;
+      results.errors.push(`Image ${i + 1}: ${cloudinaryResult.error}`);
+      console.error(`❌ Failed to delete image ${i + 1}: ${cloudinaryResult.error}`);
+    }
+  }
+
+  return results;
+};
+
+// DELETE /api/posts/:postId - Delete a post with all its images and related data
+router.delete('/:postId', authenticateUser, async (req, res) => {
+  try {
+    const { postId } = req.params;
     const userId = req.user.id;
 
-    console.log(`🗑️ Generic delete request: ${tableName}/${recordId} by user: ${userId}`);
+    console.log(`🗑️ Delete request for post: ${postId} by user: ${userId}`);
 
-    // Validate inputs
-    if (!tableName || !recordId) {
-      return res.status(400).json({ error: 'Table name and record ID are required' });
-    }
+    // Check if user is admin
+    const isAdmin = await isUserAdmin(userId);
+    console.log(`👤 User ${userId} is admin: ${isAdmin}`);
 
-    // Get the record to verify ownership and collect images
-    const { data: record, error: fetchError } = await supabase
-      .from(tableName)
-      .select('*')
-      .eq('id', recordId)
+    // Get post data including images
+    const { data: postData, error: fetchError } = await supabase
+      .from('posts')
+      .select('id, user_id, caption, images')
+      .eq('id', postId)
       .single();
 
-    if (fetchError || !record) {
-      console.log('Record not found:', fetchError?.message);
-      return res.status(404).json({ error: 'Record not found' });
-    }
-
-    // Check ownership if ownership column exists
-    if (ownershipColumn && record[ownershipColumn] && record[ownershipColumn] !== userId) {
-      console.log(`❌ Unauthorized delete attempt: User ${userId} tried to delete record owned by ${record[ownershipColumn]}`);
-      return res.status(403).json({ error: 'You can only delete your own records' });
-    }
-
-    // Extract images from the record
-    const recordImages = getImagesFromRecord(record, imageColumns);
-    console.log(`📸 Found ${recordImages.length} images to delete from ${tableName}`);
-
-    // Delete images from Cloudinary
-    let cloudinaryResults = [];
-    if (recordImages.length > 0) {
-      console.log('🗑️ Deleting images from Cloudinary...');
-      cloudinaryResults = await deleteMultipleFromCloudinary(recordImages, cloudinaryFolder, resourceType);
-      
-      const successfulDeletes = cloudinaryResults.filter(result => result.success).length;
-      const failedDeletes = cloudinaryResults.filter(result => !result.success).length;
-      
-      console.log(`✅ Cloudinary deletion results: ${successfulDeletes} successful, ${failedDeletes} failed`);
-    }
-
-    // Handle cascade deletions
-    const cascadeResults = [];
-    for (const cascade of cascadeDeletes) {
-      try {
-        const { table: cascadeTable, foreignKey } = cascade;
-        const { error: cascadeError } = await supabase
-          .from(cascadeTable)
-          .delete()
-          .eq(foreignKey, recordId);
-
-        cascadeResults.push({
-          table: cascadeTable,
-          success: !cascadeError,
-          error: cascadeError?.message
-        });
-
-        if (cascadeError) {
-          console.error(`Error deleting cascade ${cascadeTable}:`, cascadeError);
-        } else {
-          console.log(`✅ Deleted cascaded records from ${cascadeTable}`);
-        }
-      } catch (error) {
-        console.error(`Error in cascade delete for ${cascade.table}:`, error);
-        cascadeResults.push({
-          table: cascade.table,
-          success: false,
-          error: error.message
-        });
-      }
-    }
-
-    // Delete the main record
-    const { error: deleteError } = await supabase
-      .from(tableName)
-      .delete()
-      .eq('id', recordId);
-
-    if (deleteError) {
-      console.error(`Error deleting record from ${tableName}:`, deleteError);
-      return res.status(500).json({ 
-        error: `Failed to delete record from ${tableName}`,
-        cloudinaryResults: cloudinaryResults,
-        cascadeResults: cascadeResults
+    if (fetchError || !postData) {
+      console.log(`❌ Post not found: ${postId}`);
+      return res.status(404).json({
+        success: false,
+        error: 'Post not found'
       });
     }
 
-    console.log(`✅ Successfully deleted record from ${tableName}: ${recordId}`);
+    console.log(`📝 Post found - Owner: ${postData.user_id}, Images: ${postData.images?.length || 0}`);
 
-    res.json({
+    // Check if user owns this post or is admin
+    const isOwner = postData.user_id === userId;
+    const canDelete = isOwner || isAdmin;
+
+    if (!canDelete) {
+      console.log(`🚫 Permission denied - User ${userId} cannot delete post owned by ${postData.user_id}`);
+      return res.status(403).json({ 
+        success: false,
+        error: 'You do not have permission to delete this post' 
+      });
+    }
+
+    console.log(`✅ User authorized to delete post (Owner: ${isOwner}, Admin: ${isAdmin})`);
+
+    // Step 1: Count related records before deletion
+    const [commentsResult, likesResult] = await Promise.all([
+      supabase.from('comments').select('id', { count: 'exact' }).eq('post_id', postId),
+      supabase.from('post_likes').select('id', { count: 'exact' }).eq('post_id', postId)
+    ]);
+
+    const commentsCount = commentsResult.count || 0;
+    const likesCount = likesResult.count || 0;
+
+    console.log(`📊 Related records - Comments: ${commentsCount}, Likes: ${likesCount}`);
+
+    // Step 2: Delete images from Cloudinary
+    let cloudinaryResults = { total: 0, successful: 0, failed: 0, errors: [] };
+    
+    if (postData.images && postData.images.length > 0) {
+      console.log(`🖼️ Deleting ${postData.images.length} images from Cloudinary...`);
+      cloudinaryResults = await deletePostImagesFromCloudinary(postData.images);
+      
+      console.log(`📈 Cloudinary deletion results: ${cloudinaryResults.successful}/${cloudinaryResults.total} successful`);
+      if (cloudinaryResults.errors.length > 0) {
+        console.log(`⚠️ Cloudinary errors:`, cloudinaryResults.errors);
+      }
+    }
+
+    // Step 3: Delete related records from database (comments and likes)
+    console.log(`🗄️ Deleting related database records...`);
+
+    // Delete comment likes first (if any comments exist)
+    if (commentsCount > 0) {
+      const { error: commentLikesError } = await supabase
+        .from('comment_likes')
+        .delete()
+        .in('comment_id', 
+          supabase.from('comments').select('id').eq('post_id', postId)
+        );
+
+      if (commentLikesError) {
+        console.error('Error deleting comment likes:', commentLikesError);
+      } else {
+        console.log('✅ Comment likes deleted');
+      }
+    }
+
+    // Delete comments
+    const { error: commentsError } = await supabase
+      .from('comments')
+      .delete()
+      .eq('post_id', postId);
+
+    if (commentsError) {
+      console.error('Error deleting comments:', commentsError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to delete post comments'
+      });
+    }
+
+    console.log(`✅ Deleted ${commentsCount} comments`);
+
+    // Delete post likes
+    const { error: likesError } = await supabase
+      .from('post_likes')
+      .delete()
+      .eq('post_id', postId);
+
+    if (likesError) {
+      console.error('Error deleting likes:', likesError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to delete post likes'
+      });
+    }
+
+    console.log(`✅ Deleted ${likesCount} likes`);
+
+    // Step 4: Delete the post itself
+    console.log(`🗑️ Deleting post from database...`);
+
+    const { error: postDeleteError } = await supabase
+      .from('posts')
+      .delete()
+      .eq('id', postId)
+      // Add user check only if not admin (RLS policy should handle admin permissions)
+      .eq(isAdmin ? 'id' : 'user_id', isAdmin ? postId : userId);
+
+    if (postDeleteError) {
+      console.error('Database post deletion error:', postDeleteError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to delete post from database',
+        details: postDeleteError.message
+      });
+    }
+
+    // Step 5: Verify deletion
+    console.log(`🔍 Verifying post deletion...`);
+    
+    // Small delay to ensure database consistency
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    const { data: verifyPost } = await supabase
+      .from('posts')
+      .select('id')
+      .eq('id', postId)
+      .single();
+
+    if (verifyPost) {
+      console.error('❌ Post still exists after deletion attempt!');
+      return res.status(500).json({
+        success: false,
+        error: 'Post deletion verification failed - post still exists'
+      });
+    }
+
+    console.log(`✅ Post deletion verified - post ${postId} successfully removed`);
+
+    // Prepare response
+    const response = {
       success: true,
-      message: `Record and associated images deleted successfully from ${tableName}`,
-      tableName: tableName,
-      recordId: recordId,
-      deletedImages: cloudinaryResults.length,
-      cloudinaryResults: cloudinaryResults,
-      cascadeResults: cascadeResults
-    });
+      message: 'Post deleted successfully',
+      details: {
+        post_id: postId,
+        deleted_comments: commentsCount,
+        deleted_likes: likesCount,
+        cloudinary_results: cloudinaryResults,
+        is_admin_delete: isAdmin && !isOwner
+      }
+    };
+
+    // Add warnings if there were Cloudinary issues
+    if (cloudinaryResults.failed > 0) {
+      response.warnings = cloudinaryResults.errors;
+    }
+
+    res.json(response);
 
   } catch (error) {
-    console.error('Generic delete error:', error);
-    res.status(500).json({ error: 'Server error deleting record' });
+    console.error('Delete post error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Server error during post deletion',
+      details: error.message
+    });
   }
 });
 
-// BULK DELETE: Remove multiple records from any table
-router.delete('/records/:tableName/bulk', deleteRateLimit, authenticateUser, async (req, res) => {
+// POST /api/posts/bulk-delete - Delete multiple posts
+router.post('/bulk-delete', authenticateUser, async (req, res) => {
   try {
-    const { tableName } = req.params;
-    const { 
-      recordIds,
-      imageColumns = ['images', 'image_url', 'avatar_url'],
-      ownershipColumn = 'user_id',
-      cloudinaryFolder = null,
-      resourceType = 'image',
-      cascadeDeletes = []
-    } = req.body;
-
+    const { postIds } = req.body;
     const userId = req.user.id;
 
-    if (!recordIds || !Array.isArray(recordIds) || recordIds.length === 0) {
-      return res.status(400).json({ error: 'Record IDs array is required' });
+    if (!postIds || !Array.isArray(postIds) || postIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No post IDs provided'
+      });
     }
 
-    if (recordIds.length > 20) {
-      return res.status(400).json({ error: 'Maximum 20 records can be deleted at once' });
-    }
+    console.log(`🗑️ Bulk delete request for ${postIds.length} posts by user: ${userId}`);
 
-    console.log(`🗑️ Bulk delete request: ${recordIds.length} records from ${tableName} by user: ${userId}`);
+    const isAdmin = await isUserAdmin(userId);
+    const results = {
+      totalCount: postIds.length,
+      successCount: 0,
+      failedCount: 0,
+      errors: [],
+      cloudinaryResults: {
+        totalImages: 0,
+        deletedImages: 0,
+        failedImages: 0
+      }
+    };
 
-    // Get all records to verify ownership and collect images
-    const { data: records, error: fetchError } = await supabase
-      .from(tableName)
-      .select('*')
-      .in('id', recordIds);
+    // Get all posts with images
+    const { data: postsData, error: fetchError } = await supabase
+      .from('posts')
+      .select('id, user_id, images')
+      .in('id', postIds);
 
     if (fetchError) {
-      return res.status(500).json({ error: `Failed to fetch records from ${tableName}` });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch posts'
+      });
     }
 
-    // Filter records by ownership if ownership column exists
-    let ownedRecords = records;
-    let unauthorizedRecords = [];
-
-    if (ownershipColumn) {
-      ownedRecords = records.filter(record => record[ownershipColumn] === userId);
-      unauthorizedRecords = records.filter(record => record[ownershipColumn] !== userId);
-
-      if (unauthorizedRecords.length > 0) {
-        console.log(`❌ Unauthorized delete attempt for ${unauthorizedRecords.length} records`);
-      }
-    }
-
-    if (ownedRecords.length === 0) {
-      return res.status(403).json({ error: 'No owned records found to delete' });
-    }
-
-    console.log(`📊 Deleting ${ownedRecords.length} owned records (${unauthorizedRecords.length} unauthorized)`);
-
-    // Collect all images from owned records
-    const allImages = [];
-    ownedRecords.forEach(record => {
-      const recordImages = getImagesFromRecord(record, imageColumns);
-      allImages.push(...recordImages);
-    });
-
-    console.log(`📸 Total images to delete from Cloudinary: ${allImages.length}`);
-
-    // Delete images from Cloudinary
-    let cloudinaryResults = [];
-    if (allImages.length > 0) {
-      cloudinaryResults = await deleteMultipleFromCloudinary(allImages, cloudinaryFolder, resourceType);
-    }
-
-    const ownedRecordIds = ownedRecords.map(record => record.id);
-
-    // Handle cascade deletions
-    const cascadeResults = [];
-    for (const cascade of cascadeDeletes) {
+    for (const postId of postIds) {
       try {
-        const { table: cascadeTable, foreignKey } = cascade;
-        const { error: cascadeError } = await supabase
-          .from(cascadeTable)
-          .delete()
-          .in(foreignKey, ownedRecordIds);
+        const postData = postsData.find(post => post.id === postId);
 
-        cascadeResults.push({
-          table: cascadeTable,
-          success: !cascadeError,
-          error: cascadeError?.message
-        });
+        if (!postData) {
+          results.failedCount++;
+          results.errors.push(`${postId}: Post not found`);
+          continue;
+        }
+
+        // Check ownership
+        const isOwner = postData.user_id === userId;
+        const canDelete = isOwner || isAdmin;
+
+        if (!canDelete) {
+          results.failedCount++;
+          results.errors.push(`${postId}: Permission denied`);
+          continue;
+        }
+
+        // Delete images from Cloudinary
+        if (postData.images && postData.images.length > 0) {
+          const cloudinaryResult = await deletePostImagesFromCloudinary(postData.images);
+          results.cloudinaryResults.totalImages += cloudinaryResult.total;
+          results.cloudinaryResults.deletedImages += cloudinaryResult.successful;
+          results.cloudinaryResults.failedImages += cloudinaryResult.failed;
+        }
+
+        // Delete related records and post
+        await Promise.all([
+          // Delete comment likes
+          supabase.from('comment_likes').delete()
+            .in('comment_id', 
+              supabase.from('comments').select('id').eq('post_id', postId)
+            ),
+          // Delete comments
+          supabase.from('comments').delete().eq('post_id', postId),
+          // Delete likes
+          supabase.from('post_likes').delete().eq('post_id', postId)
+        ]);
+
+        // Delete post
+        const { error: deleteError } = await supabase
+          .from('posts')
+          .delete()
+          .eq('id', postId)
+          .eq(isAdmin ? 'id' : 'user_id', isAdmin ? postId : userId);
+
+        if (deleteError) {
+          results.failedCount++;
+          results.errors.push(`${postId}: Database deletion failed`);
+          continue;
+        }
+
+        results.successCount++;
+
       } catch (error) {
-        cascadeResults.push({
-          table: cascade.table,
-          success: false,
-          error: error.message
-        });
+        results.failedCount++;
+        results.errors.push(`${postId}: ${error.message}`);
       }
     }
 
-    // Delete the records
-    const { error: deleteError } = await supabase
-      .from(tableName)
-      .delete()
-      .in('id', ownedRecordIds);
-
-    if (deleteError) {
-      console.error(`Error bulk deleting from ${tableName}:`, deleteError);
-      return res.status(500).json({ error: `Failed to delete records from ${tableName}` });
-    }
-
-    const successfulDeletes = cloudinaryResults.filter(result => result.success).length;
-    const failedDeletes = cloudinaryResults.filter(result => !result.success).length;
-
-    console.log(`✅ Bulk delete completed: ${ownedRecords.length} records, ${successfulDeletes} images deleted, ${failedDeletes} image deletions failed`);
+    console.log(`📊 Bulk delete completed: ${results.successCount}/${results.totalCount} posts deleted`);
+    console.log(`🖼️ Cloudinary: ${results.cloudinaryResults.deletedImages}/${results.cloudinaryResults.totalImages} images deleted`);
 
     res.json({
       success: true,
-      message: `Successfully deleted ${ownedRecords.length} records from ${tableName}`,
-      tableName: tableName,
-      deletedRecords: ownedRecords.length,
-      unauthorizedRecords: unauthorizedRecords.length,
-      deletedImages: successfulDeletes,
-      failedImageDeletions: failedDeletes,
-      cloudinaryResults: cloudinaryResults,
-      cascadeResults: cascadeResults
+      message: 'Bulk deletion completed',
+      results: results
     });
 
   } catch (error) {
     console.error('Bulk delete error:', error);
-    res.status(500).json({ error: 'Server error during bulk delete' });
+    res.status(500).json({
+      success: false,
+      error: 'Server error during bulk deletion'
+    });
   }
 });
 
-// CLEANUP: Remove orphaned images from Cloudinary
-router.delete('/cleanup/orphaned/:tableName', deleteRateLimit, authenticateAdmin, async (req, res) => {
+// GET /api/posts/:postId/can-delete - Check if user can delete a specific post
+router.get('/:postId/can-delete', authenticateUser, async (req, res) => {
   try {
-    const { tableName } = req.params;
-    const { 
-      imageColumns = ['images', 'image_url', 'avatar_url'],
-      cloudinaryFolder = null,
-      resourceType = 'image'
-    } = req.body;
-
-    console.log(`🧹 Orphaned images cleanup for table: ${tableName}`);
-
-    // Get all images from the specified table
-    const { data: records, error: fetchError } = await supabase
-      .from(tableName)
-      .select(imageColumns.join(', '));
-
-    if (fetchError) {
-      return res.status(500).json({ error: `Failed to fetch records from ${tableName}` });
-    }
-
-    const databaseImages = new Set();
-    records.forEach(record => {
-      const recordImages = getImagesFromRecord(record, imageColumns);
-      recordImages.forEach(img => databaseImages.add(img));
-    });
-
-    console.log(`📊 Found ${databaseImages.size} images in database for ${tableName}`);
-
-    // Note: This is a simplified version. In production, you would:
-    // 1. Use Cloudinary Admin API to list all resources in the folder
-    // 2. Compare with database images
-    // 3. Delete orphaned ones
-
-    // For now, return information about database images
-    res.json({
-      success: true,
-      message: `Orphaned image cleanup scan for ${tableName}`,
-      tableName: tableName,
-      databaseImages: databaseImages.size,
-      imageUrls: Array.from(databaseImages),
-      note: 'This endpoint needs enhancement with Cloudinary Admin API to actually clean up orphaned images'
-    });
-
-  } catch (error) {
-    console.error('Cleanup error:', error);
-    res.status(500).json({ error: 'Server error during cleanup' });
-  }
-});
-
-// PREVIEW: Show what would be deleted (dry run)
-router.get('/preview/:tableName/:recordId', authenticateUser, async (req, res) => {
-  try {
-    const { tableName, recordId } = req.params;
-    const { 
-      imageColumns = ['images', 'image_url', 'avatar_url'],
-      ownershipColumn = 'user_id',
-      cascadeDeletes = []
-    } = req.query;
-
+    const { postId } = req.params;
     const userId = req.user.id;
 
-    const { data: record, error } = await supabase
-      .from(tableName)
-      .select('*')
-      .eq('id', recordId)
+    const isAdmin = await isUserAdmin(userId);
+
+    // Get post ownership info
+    const { data: postData } = await supabase
+      .from('posts')
+      .select('id, user_id')
+      .eq('id', postId)
       .single();
 
-    if (error || !record) {
-      return res.status(404).json({ error: 'Record not found' });
-    }
-
-    // Check ownership
-    if (ownershipColumn && record[ownershipColumn] && record[ownershipColumn] !== userId) {
-      return res.status(403).json({ error: 'You can only preview deletion of your own records' });
-    }
-
-    // Get images
-    const parsedImageColumns = Array.isArray(imageColumns) ? imageColumns : [imageColumns];
-    const recordImages = getImagesFromRecord(record, parsedImageColumns);
-
-    // Get cascade counts
-    const cascadeCounts = {};
-    const parsedCascades = Array.isArray(cascadeDeletes) ? cascadeDeletes : [];
-    
-    for (const cascade of parsedCascades) {
-      if (typeof cascade === 'string') {
-        try {
-          const parsed = JSON.parse(cascade);
-          const { count } = await supabase
-            .from(parsed.table)
-            .select('*', { count: 'exact', head: true })
-            .eq(parsed.foreignKey, recordId);
-          
-          cascadeCounts[parsed.table] = count || 0;
-        } catch (e) {
-          cascadeCounts[cascade] = 'Error parsing cascade config';
-        }
-      } else if (cascade.table && cascade.foreignKey) {
-        const { count } = await supabase
-          .from(cascade.table)
-          .select('*', { count: 'exact', head: true })
-          .eq(cascade.foreignKey, recordId);
-        
-        cascadeCounts[cascade.table] = count || 0;
-      }
-    }
+    const isOwner = postData ? postData.user_id === userId : false;
+    const canDelete = isOwner || isAdmin;
 
     res.json({
       success: true,
-      tableName: tableName,
-      recordId: recordId,
-      record: record,
-      willDelete: {
-        images: recordImages.length,
-        imageUrls: recordImages,
-        cascadeRecords: cascadeCounts
-      },
-      warning: 'This action cannot be undone!'
+      can_delete: canDelete,
+      is_admin: isAdmin,
+      is_owner: isOwner,
+      post_exists: !!postData
     });
 
   } catch (error) {
-    console.error('Preview delete error:', error);
-    res.status(500).json({ error: 'Server error previewing deletion' });
+    console.error('Check delete permission error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Server error checking delete permission'
+    });
   }
 });
 
-// SPECIFIC ENDPOINTS for common tables (backward compatibility)
+// GET /api/posts/:postId/details - Get post details for deletion confirmation
+router.get('/:postId/details', authenticateUser, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const userId = req.user.id;
 
-// Posts
-router.delete('/posts/:postId', deleteRateLimit, authenticateUser, async (req, res) => {
-  req.body = {
-    imageColumns: ['images'],
-    ownershipColumn: 'user_id',
-    cloudinaryFolder: 'posts',
-    cascadeDeletes: [
-      { table: 'post_likes', foreignKey: 'post_id' },
-      { table: 'post_comments', foreignKey: 'post_id' }
-    ]
-  };
-  
-  req.params.tableName = 'posts';
-  req.params.recordId = req.params.postId;
-  
-  // Call the generic delete handler
-  return router.stack.find(layer => layer.route?.path === '/record/:tableName/:recordId').route.stack[0].handle(req, res);
-});
+    // Get post with user info using the view or manual join
+    const { data: postData, error } = await supabase
+      .from('posts_with_users')
+      .select(`
+        id,
+        user_id,
+        caption,
+        images,
+        created_at,
+        likes_count,
+        comments_count,
+        username,
+        display_name
+      `)
+      .eq('id', postId)
+      .single();
 
-// User profiles
-router.delete('/profiles/:profileId', deleteRateLimit, authenticateUser, async (req, res) => {
-  req.body = {
-    imageColumns: ['avatar_url', 'cover_image'],
-    ownershipColumn: 'id',
-    cloudinaryFolder: 'profiles',
-    cascadeDeletes: [
-      { table: 'posts', foreignKey: 'user_id' },
-      { table: 'post_likes', foreignKey: 'user_id' },
-      { table: 'post_comments', foreignKey: 'user_id' }
-    ]
-  };
-  
-  req.params.tableName = 'profiles';
-  req.params.recordId = req.params.profileId;
-  
-  return router.stack.find(layer => layer.route?.path === '/record/:tableName/:recordId').route.stack[0].handle(req, res);
+    if (error || !postData) {
+      return res.status(404).json({
+        success: false,
+        error: 'Post not found'
+      });
+    }
+
+    const isAdmin = await isUserAdmin(userId);
+    const isOwner = postData.user_id === userId;
+    const canDelete = isOwner || isAdmin;
+
+    res.json({
+      success: true,
+      post: {
+        id: postData.id,
+        caption: postData.caption,
+        imageCount: postData.images?.length || 0,
+        likesCount: postData.likes_count || 0,
+        commentsCount: postData.comments_count || 0,
+        userName: postData.username || postData.display_name || 'Anonymous',
+        createdAt: postData.created_at
+      },
+      permissions: {
+        can_delete: canDelete,
+        is_admin: isAdmin,
+        is_owner: isOwner
+      }
+    });
+
+  } catch (error) {
+    console.error('Get post details error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Server error fetching post details'
+    });
+  }
 });
 
 module.exports = router;
