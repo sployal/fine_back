@@ -285,53 +285,6 @@ router.post('/mpesa/stk-push', async (req, res) => {
       console.log('Database update result:', updateResult);
       console.log('SANDBOX STK Push successful!');
 
-      // SIMPLE FIX: Auto-complete for sandbox after 10 seconds
-      setTimeout(async () => {
-        try {
-          console.log('Auto-completing sandbox transaction:', transactionId);
-          
-          // Check if transaction is still pending
-          const { data: checkTransaction } = await supabase
-            .from('mpesa_transactions')
-            .select('status')
-            .eq('transaction_id', transactionId)
-            .single();
-
-          if (checkTransaction && checkTransaction.status === 'pending') {
-            // Auto-complete the transaction
-            const mockReceiptNumber = `SANDBOX${Date.now()}`;
-            
-            const { error: completeError } = await supabase
-              .from('mpesa_transactions')
-              .update({
-                status: 'completed',
-                mpesa_receipt_number: mockReceiptNumber,
-                transaction_date: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14),
-                completed_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-              })
-              .eq('transaction_id', transactionId);
-
-            if (!completeError) {
-              console.log('Auto-completed sandbox transaction:', transactionId);
-              
-              // Get transaction details and process payment
-              const { data: transaction } = await supabase
-                .from('mpesa_transactions')
-                .select('*')
-                .eq('transaction_id', transactionId)
-                .single();
-
-              if (transaction) {
-                await processPhotoPayment(transaction);
-              }
-            }
-          }
-        } catch (autoCompleteError) {
-          console.error('Auto-complete error:', autoCompleteError);
-        }
-      }, 10000); // 10 seconds delay
-
       res.json({
         success: true,
         message: 'STK Push sent successfully to your phone',
