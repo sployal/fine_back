@@ -223,6 +223,16 @@ try {
   console.log('📝 Image sending functionality will be disabled');
 }
 
+// Try to import featured image routes with error handling
+try {
+  const featuredImageRoutes = require('./featured/featured_image');
+  app.use('/api/featured', featuredImageRoutes);
+  console.log('✅ Featured image routes loaded successfully');
+} catch (error) {
+  console.error('⚠️ Failed to load featured image routes:', error.message);
+  console.log('📝 Featured image functionality will be disabled');
+}
+
 // Import the M-Pesa payment routes (now contains all payment functionality)
 try {
   const mpesaRoutes = require('./payment/mpesa');
