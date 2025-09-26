@@ -243,6 +243,23 @@ try {
   console.log('📝 Image deletion functionality will be disabled');
 }
 
+// Load delete my posts routes AFTER existing delete routes
+try {
+  let deleteMyPostsRoutes;
+  try {
+    // Preferred correct filename
+    deleteMyPostsRoutes = require('./delete/delete_myposts');
+  } catch (innerError) {
+    // Fallback to current filename with typo in repo
+    deleteMyPostsRoutes = require('./delete/detete_myposts');
+  }
+  app.use('/api/posts', deleteMyPostsRoutes);
+  console.log('✅ Delete my posts routes loaded successfully');
+} catch (error) {
+  console.error('⚠️ Failed to load delete my posts routes:', error.message);
+  console.log('📝 Enhanced post deletion functionality will be disabled');
+}
+
 // Upload POST images endpoint (keeps using posts folder)
 app.post('/api/upload-images', uploadLimiter, authenticateUser, upload.array('images', 5), async (req, res) => {
   try {
