@@ -26,7 +26,7 @@ const upload = multer({
     files: 5, // Maximum 5 images per message
   },
   fileFilter: (req, file, cb) => {
-    // Only allow image files
+    // Simple check - just verify it starts with 'image/'
     if (file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
@@ -38,7 +38,7 @@ const upload = multer({
 // Rate limiting for chat image uploads
 const chatImageUploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // limit to 20 uploads per 15 minutes (more lenient than posts)
+  max: 20, // limit to 20 uploads per 15 minutes
   message: { error: 'Too many image uploads, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -75,12 +75,12 @@ const uploadChatImageToCloudinary = (buffer, originalName, userId) => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
-        folder: 'chat_images', // Separate folder for chat images
+        folder: 'chat_images',
         resource_type: 'image',
         transformation: [
           { quality: 'auto:good' },
           { fetch_format: 'auto' },
-          { width: 1200, height: 1200, crop: 'limit' } // Limit size for chat images
+          { width: 1200, height: 1200, crop: 'limit' }
         ],
         public_id: `chat_${userId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
       },
