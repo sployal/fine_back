@@ -203,6 +203,15 @@ try {
   console.log('📝 Profile image functionality will be disabled');
 }
 
+// Import the chat image upload routes
+try {
+  const imageTextRoutes = require('./imagesend/imagetext');
+  app.use('/api/images', imageTextRoutes);
+  console.log('✅ Chat image upload routes loaded successfully');
+} catch (error) {
+  console.error('⚠️ Failed to load chat image routes:', error.message);
+  console.log('📝 Chat image functionality will be disabled');
+}
 // Load delete post routes BEFORE main server routes to prevent conflicts
 try {
   const deletePostRoutes = require('./delete/delete_post');
