@@ -222,6 +222,17 @@ try {
   console.log('📝 Post deletion functionality will be disabled');
 }
 
+
+// Load chat image deletion routes
+try {
+  const deleteChatImageRoutes = require('./delete/delete_textimage');
+  app.use('/api/images', deleteChatImageRoutes);
+  console.log('✅ Chat image deletion routes loaded successfully');
+} catch (error) {
+  console.error('⚠️ Failed to load chat image deletion routes:', error.message);
+}
+
+
 // Try to import image routes with error handling
 try {
   const imageRoutes = require('./imagesend/image');
